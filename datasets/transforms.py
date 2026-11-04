@@ -22,19 +22,9 @@ class StmNormalize:
     def __call__(self, image):
         x = torch.asinh(image.float() / 65535.0 / 0.01)
         std = x.std()
-        return (x - x.mean()) / (std if std >= 1e-6 else 1.0)
-
-
-class FixedNoise:
-    """Gaussian noise that is the same for a molecule on every read (a robustness probe)."""
-
-    def __init__(self, std, seed=0):
-        self.std = std
-        self.seed = seed
-
-    def __call__(self, image, index):
-        generator = torch.Generator().manual_seed((self.seed * 1000003 + int(index)) & 0x7FFFFFFF)
-        return image + self.std * torch.randn(image.shape, generator=generator)
+        if std < 1e-6:
+            std = 1.0
+        return (x - x.mean()) / std
 
 
 class RandomSlice:
@@ -55,15 +45,18 @@ class FixedSlice:
 
 
 def get_transforms(single_slice=False, hflip_rot90=False, rotate_deg=0, translate=0,
-                      blur_sigma=0, noise_std=0, random_erasing=0, p=0.5):
+                   blur_sigma=0, noise_std=0, random_erasing=0, p=0.5, eval_noise_std=0):
     """Return (train_transforms, eval_transforms).
 
     Every augmentation is off by default and is used for training only. Each enabled one is
     applied with probability `p`; `random_erasing` is its own probability. `translate` is a
-    fraction of the image size.
+    fraction of the image size. `eval_noise_std` adds noise to every train and eval image, to
+    test how robust the model is to noisy images.
     """
-    train_transforms = [RandomSlice()] if single_slice else []
-    eval_transforms = [FixedSlice(0)] if single_slice else []
+    train_transforms, eval_transforms = [], []
+    if single_slice:
+        train_transforms.append(RandomSlice())
+        eval_transforms.append(FixedSlice(0))
 
     if hflip_rot90:
         quarter_turns = [v2.RandomRotation((angle, angle)) for angle in (0, 90, 180, 270)]
@@ -82,6 +75,9 @@ def get_transforms(single_slice=False, hflip_rot90=False, rotate_deg=0, translat
         train_transforms.append(v2.RandomApply([noise], p=p))
     if random_erasing:
         train_transforms.append(v2.RandomErasing(p=random_erasing, scale=(0.02, 0.1), ratio=(1, 1)))
+    if eval_noise_std:
+        train_transforms.append(v2.GaussianNoise(sigma=eval_noise_std, clip=False))
+        eval_transforms.append(v2.GaussianNoise(sigma=eval_noise_std, clip=False))
 
     return (v2.Compose(train_transforms or [v2.Identity()]),
             v2.Compose(eval_transforms or [v2.Identity()]))

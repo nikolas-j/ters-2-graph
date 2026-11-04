@@ -27,8 +27,8 @@ from tools.diagnostics.diagnose_progress import FixedT
 def main():
     ap = argparse.ArgumentParser(allow_abbrev=False)
     ap.add_argument('--ckpt', required=True)
-    ap.add_argument('--config', help='Python config file; override fields with --config.FIELD=VALUE', default='configs/diffspectra_ters.py')
-    ap.add_argument('--config_original_qm9', '--config-qm9', dest='config_qm9', default='configs/base_ters.py')
+    ap.add_argument('--config', help='Python config file; override fields with --config.FIELD=VALUE', default='configs/diffspectra_ters_qm9s.py')
+    ap.add_argument('--config_original_qm9', '--config-qm9', dest='config_qm9', default='configs/base_ters_qm9s.py')
     ap.add_argument('--batches', type=int, default=2)
     ap.add_argument('--seeds', type=int, default=4)
     args, config_overrides = ap.parse_known_args()

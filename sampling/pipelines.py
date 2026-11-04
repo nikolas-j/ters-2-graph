@@ -28,7 +28,7 @@ def get_sampling_fn(config, noise_scheduler, batch_size, n_samples, inverse_scal
     self_cond = config.model.self_cond
     only_2D = config.only_2D
     spectra_version = getattr(config.data, 'spectra_version', None)
-    image_attr = getattr(val_ds, 'image_attr', None)  # 'ters' or 'stm' for image-cube datasets
+    image_attr = getattr(val_ds, 'image_attr', None)  # 'image' for ImageGraphDataset
 
     num_sampling_rounds = int(np.ceil(n_samples / batch_size))
     if config.sampling.method == 'ancestral':
@@ -241,7 +241,7 @@ def get_cond_sampling_eval_fn(config, noise_scheduler, batch_size, n_samples, in
     self_cond = config.model.self_cond
     only_2D = config.only_2D
     spectra_version = getattr(config.data, 'spectra_version', None)
-    image_attr = getattr(test_ds, 'image_attr', None)  # 'ters' or 'stm' for image-cube datasets
+    image_attr = getattr(test_ds, 'image_attr', None)  # 'image' for ImageGraphDataset
 
     num_sampling_rounds = int(np.ceil(n_samples / batch_size))
     if config.sampling.method == 'ancestral':

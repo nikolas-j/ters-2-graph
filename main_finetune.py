@@ -5,8 +5,8 @@ model.load_pretrained_cond_encoder) and trains only cond_encoder and cond_lin.
 Use this script for evaluation too, so the EMA covers the same parameters.
 
 Usage:
-    python main_finetune.py --config configs/diffspectra_ters_frozen.py --workdir RUN --mode train
-    python main_finetune.py --config configs/diffspectra_ters_frozen.py --workdir RUN --mode eval
+    python main_finetune.py --config configs/qm9s_ters_frozen.py --config_original_qm9 configs/base_ters_qm9s.py --workdir RUN --mode train
+    python main_finetune.py --config configs/qm9s_ters_frozen.py --config_original_qm9 configs/base_ters_qm9s.py --workdir RUN --mode eval
 """
 
 import torch

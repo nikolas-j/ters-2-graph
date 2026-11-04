@@ -20,5 +20,4 @@ slurm/logs/
 
 slurm-scripts/
 
-
-!.env.example
+e2bin-port/

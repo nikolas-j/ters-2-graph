@@ -122,8 +122,8 @@ def probe_one(model, loader, device, n, lam, seed, label):
 def main():
     ap = argparse.ArgumentParser(allow_abbrev=False)
     ap.add_argument('--ckpt', required=True)
-    ap.add_argument('--config', help='Python config file; override fields with --config.FIELD=VALUE', default='configs/diffspectra_stm.py')
-    ap.add_argument('--config_original_qm9', '--config-qm9', dest='config_qm9', default='configs/base_stm.py')
+    ap.add_argument('--config', help='Python config file; override fields with --config.FIELD=VALUE', default='configs/diffspectra_ters_qm9s.py')
+    ap.add_argument('--config_original_qm9', '--config-qm9', dest='config_qm9', default='configs/base_ters_qm9s.py')
     ap.add_argument('--n', type=int, default=1024, help='molecules to probe')
     ap.add_argument('--lam', type=float, default=1.0, help='ridge penalty')
     ap.add_argument('--seed', type=int, default=0)

@@ -22,8 +22,8 @@ sys.path.insert(0, REPO)
 from env import output_root                                             # noqa: E402  (needs the path above)
 
 CONFIGS = {
-    'stm': ('configs/diffspectra_stm.py', 'configs/base_stm.py'),
-    'ters': ('configs/diffspectra_ters.py', 'configs/base_ters.py'),
+    'ters': ('configs/diffspectra_ters_qm9s.py', 'configs/base_ters_qm9s.py'),
+    'stm': ('configs/diffspectra_stm_qm9.py', 'configs/base_stm_qm9.py'),
 }
 
 # (cell name, split, shuffled)
@@ -70,7 +70,7 @@ def main():
     ap = argparse.ArgumentParser(description=__doc__, allow_abbrev=False,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument('--ckpt', required=True)
-    ap.add_argument('--modality', default='stm', choices=sorted(CONFIGS))
+    ap.add_argument('--modality', default='ters', choices=sorted(CONFIGS))
     ap.add_argument('--out', default=None, help='default: OUTPUT_ROOT/stm-eval/paper_metrics')
     ap.add_argument('--n-mols', type=int, default=20,
                     help='spectra per cell (default 20 = the TERS protocol)')

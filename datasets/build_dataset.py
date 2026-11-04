@@ -1,681 +1,137 @@
-from torch_geometric.transforms import Compose, ToDevice
-from .qm9s_dataset import QM9SDataset
-from .datasets_config import get_dataset_info
-from torch_geometric.data import Data
-from torch.utils.data import DataLoader
+"""Datasets and data loaders for image-conditioned molecule generation."""
+
+import os.path as osp
+
+import h5py
 import torch
-from scipy.spatial.transform import Rotation
-import numpy as np
+import torch.nn.functional as F
+from rdkit import Chem
+from torch.utils.data import DataLoader, DistributedSampler
+from torchvision.transforms import v2
+
+from .datasets_config import get_dataset_info
+from .image_dataset import ImageGraphDataset
+from .transforms import PerChannelNormalize, get_transforms
 
 
-prop2idx = {'mu': 0, 'alpha': 1, 'homo': 2, 'lumo': 3, 'gap': 4, 'Cv': 11}
+def get_dataset(config):
+    """Return ``(train, train, val, test, dataset_info)``; the train set fills both train slots."""
+    data = config.data
+    info = get_dataset_info(data.info_name)
+    transform = EdgeComSpectraTransform(info['atom_encoder'].values(), data.include_aromatic)
+    table = Chem.GetPeriodicTable()
+    atom_types = {table.GetAtomicNumber(symbol): index for symbol, index in info['atom_encoder'].items()}
 
-
-def get_dataset(config, transform=True):
-    """Create dataset for training and evaluation."""
-
-    # Obtain dataset info
-    dataset_info = get_dataset_info(config.data.info_name)  # 'qm9_second_half' -> qm9_second_half object
-
-    # get transform
-    if transform:         # True
-        name_transform = getattr(config.data, 'transform', 'EdgeComSpectra')   # 'EdgeComSpectra'
-        if name_transform == 'EdgeComSpectra':
-            transform = EdgeComSpectraTransform(dataset_info['atom_encoder'].values(), config.data.include_aromatic, use_normalize=config.data.use_normalize)
-        elif name_transform == 'EdgeComCond':
-            prop2idx = dataset_info['prop2idx']
-            transform = EdgeComCondTransform(dataset_info['atom_encoder'].values(), config.data.include_aromatic,
-                                                prop2idx[config.cond_property])
-        else:
-            raise ValueError('Invalid data transform name')
-    else:
-        transform = None
-
-    # Build up dataset
-    if config.data.name == 'TERS':
-        return get_ters_dataset(config, transform, dataset_info)
-
-    if config.data.name == 'STM':
-        return get_stm_dataset(config, transform, dataset_info)
-
-    if config.data.name == 'QM9S':
-        dataset = QM9SDataset(config.data.root, transform=transform, spectra_version=config.data.spectra_version)
-    else:
-        raise ValueError('Undefined dataset name.')
-
-    # Split dataset
-    if 'cond' in config.exp_type or 'diffspectra' in config.exp_type:
-        split_idx = dataset.get_cond_idx_split()
-        train_idx = np.concatenate([split_idx['first_train'], split_idx['second_train']])
-        first_train_dataset = dataset.index_select(split_idx['first_train'])
-        second_train_dataset = dataset.index_select(train_idx)
-        val_dataset = dataset.index_select(split_idx['valid'])
-        test_dataset = dataset.index_select(split_idx['test'])
-        return first_train_dataset, second_train_dataset, val_dataset, test_dataset, dataset_info
-
-    split_idx = dataset.get_idx_split()
-    train_dataset = dataset.index_select(split_idx['train'])
-    val_dataset = dataset.index_select(split_idx['valid'])
-    test_dataset = dataset.index_select(split_idx['test'])
-
-    return train_dataset, val_dataset, test_dataset, dataset_info
-
-
-def _get_image_noise(config):
-    """``FixedNoise`` from ``data.image_noise_std`` and ``data.image_noise_seed``; None when off."""
-    from .transforms import FixedNoise
-
-    std = getattr(config.data, 'image_noise_std', 0.0)
-    return FixedNoise(std, getattr(config.data, 'image_noise_seed', 0)) if std > 0 else None
-
-
-def _set_transforms(config, train, val, test):
-    """Give each split its image transforms, built from the options in ``data.augmentation``."""
-    from .transforms import get_transforms
-
-    options = getattr(config.data, 'augmentation', None)
-    if options:
-        train.transform_image, val.transform_image = get_transforms(**options)
+    train = _build_split(data, 'train', transform, atom_types)
+    val = _build_split(data, 'val', transform, atom_types)
+    test = _build_split(data, 'test', transform, atom_types)
+    if getattr(data, 'transforms', None):
+        train.transform_image, val.transform_image = get_transforms(**data.transforms)
         test.transform_image = val.transform_image
+    return train, train, val, test, info
 
 
-def get_ters_dataset(config, transform, dataset_info):
-    """Train, val and test ``TersDataset`` splits; the train set fills both train slots.
-
-    Config keys: ``data.root`` ({train,val,test}.h5), ``data.graph_root`` (graphs_{split}.pt,
-    default ``data.root``), ``data.ters_key`` (default ``channels_100``), ``data.load_images``,
-    ``data.image_noise_std``, ``data.image_noise_seed``, ``data.augmentation``.
-    """
-    import os.path as osp
-    from .ters_dataset import TersDataset
-
-    data = config.data
-    graph_root = getattr(data, 'graph_root', data.root)
-    datasets = [TersDataset(osp.join(data.root, f'{split}.h5'),
-                            osp.join(graph_root, f'graphs_{split}.pt'),
-                            image_key=getattr(data, 'ters_key', 'channels_100'),
-                            transform=transform,
-                            load_images=getattr(data, 'load_images', True),
-                            noise=_get_image_noise(config))
-                for split in ('train', 'val', 'test')]
-    _set_transforms(config, *datasets)
-    train, val, test = datasets
-    return train, train, val, test, dataset_info
+def _build_split(data, split, transform, atom_types):
+    h5_path = osp.join(data.root, f'{split}.h5')
+    smiles_path = None
+    if getattr(data, 'smiles_root', ''):
+        smiles_path = osp.join(data.smiles_root, f'{split}.h5')
+    return ImageGraphDataset(h5_path, data.cache_dir, data.image_key, atom_types, bonds=data.bonds,
+                             qm9_path=getattr(data, 'qm9_path', None), smiles_path=smiles_path,
+                             transform=transform, normalize=_get_normalizer(data, h5_path),
+                             load_images=getattr(data, 'load_images', True))
 
 
-def get_stm_dataset(config, transform, dataset_info):
-    """As ``get_ters_dataset`` for ``StmDataset``; ``data.stm_key`` (default ``X``) names the images."""
-    import os.path as osp
-    from .stm_dataset import StmDataset
-
-    data = config.data
-    graph_root = getattr(data, 'graph_root', data.root)
-    datasets = [StmDataset(osp.join(data.root, f'{split}.h5'),
-                           osp.join(graph_root, f'graphs_{split}.pt'),
-                           split=split,
-                           transform=transform,
-                           load_images=getattr(data, 'load_images', True),
-                           image_key=getattr(data, 'stm_key', 'X'),
-                           noise=_get_image_noise(config))
-                for split in ('train', 'val', 'test')]
-    _set_transforms(config, *datasets)
-    train, val, test = datasets
-    return train, train, val, test, dataset_info
+def _get_normalizer(data, h5_path):
+    """``data.normalize``: 'per_channel' (TERS), 'corpus' (one mean/std from the file's attributes, STM)."""
+    if data.normalize == 'per_channel':
+        return PerChannelNormalize()
+    if data.normalize == 'corpus':
+        with h5py.File(h5_path, 'r') as f:
+            return v2.Normalize(mean=[float(f.attrs['mean'])], std=[float(f.attrs['std'])])
+    raise ValueError(f"data.normalize must be 'per_channel' or 'corpus', got {data.normalize!r}")
 
 
-def inf_iterator(iterable):
-    """Yield batches indefinitely, restarting the loader at each epoch boundary.
-
-    Calls ``sampler.set_epoch`` on each restart; without it DistributedSampler repeats the
-    same order every epoch.
-    """
-    epoch = 0
-    sampler = getattr(iterable, 'sampler', None)
-    if hasattr(sampler, 'set_epoch'):
-        sampler.set_epoch(epoch)
-    iterator = iterable.__iter__()
-    while True:
-        try:
-            yield iterator.__next__()
-        except StopIteration:
-            epoch += 1
-            if hasattr(sampler, 'set_epoch'):
-                sampler.set_epoch(epoch)
-            iterator = iterable.__iter__()
-
-
-# setup dataloader
 def get_dataloader(train_ds, val_ds, test_ds, config):
-    if config.model.name == 'DMT':
-        aug_rotation = False
-        aug_translation = False
-    else:
-        raise ValueError(f"Model {config.model.name} not recognized.")
-
-    is_ters = config.data.name == 'TERS'
-    is_stm = config.data.name == 'STM'
-
-    if is_stm:
-        if config.only_2D:
-            raise ValueError('only_2D has no STM collate; the z-stack conditions 3D positions.')
-        collate_fn = CollateStm(
-            aug_rotation=aug_rotation,
-            aug_translation=aug_translation,
-            aug_translation_scale=config.data.aug_translation_scale
-        )
-    elif is_ters:
-        if config.only_2D:
-            raise ValueError('only_2D has no TERS collate; the image conditions 3D positions.')
-        collate_fn = CollateTers(
-            aug_rotation=aug_rotation,
-            aug_translation=aug_translation,
-            aug_translation_scale=config.data.aug_translation_scale
-        )
-    elif config.only_2D:
-        collate_fn = CollateSpectr2D(
-            spectra_version=config.data.spectra_version,
-        )
-    else:
-        collate_fn = CollateSpectra(
-            spectra_version=config.data.spectra_version,
-            aug_rotation=aug_rotation,
-            aug_translation=aug_translation,
-            aug_translation_scale=config.data.aug_translation_scale
-        )
-
-    # Planar TERS images are 26 MB each (256x256x100 float32); prefetch_factor=1 bounds in-flight
-    # RAM to about num_workers x batch_size images.
-    loader_kwargs = {}
-    if is_ters:
-        num_workers = getattr(config.data, 'num_workers', 2)
-        if num_workers > 0:
-            loader_kwargs['prefetch_factor'] = 1
-    else:
-        num_workers = config.data.num_workers
-
-    # Under DDP, shard the training set across ranks; batch_size is then per rank.
-    train_sampler = None
-    if bool(getattr(config.training, 'ddp', False)):
-        from torch.utils.data.distributed import DistributedSampler
-        import distributed as _dist
-        train_sampler = DistributedSampler(
-            train_ds, num_replicas=_dist.get_world_size(), rank=_dist.get_rank(),
-            shuffle=True, drop_last=config.training.dataloader_drop_last)
-
-    train_loader = DataLoader(train_ds, batch_size=config.training.batch_size,
-                                shuffle=(train_sampler is None), sampler=train_sampler,
-                                num_workers=num_workers, collate_fn=collate_fn, drop_last=config.training.dataloader_drop_last, **loader_kwargs)
-    val_loader = DataLoader(val_ds, batch_size=config.training.eval_batch_size, shuffle=False,
-                                num_workers=num_workers, collate_fn=collate_fn, **loader_kwargs)
-    test_loader = DataLoader(test_ds, batch_size=config.training.eval_batch_size, shuffle=False,
-                                num_workers=num_workers, collate_fn=collate_fn, **loader_kwargs)
-    return train_loader, val_loader, test_loader
+    """Return ``(train, val, test)`` loaders. Under DDP, ``training.batch_size`` is per rank."""
+    if config.only_2D:
+        raise ValueError('only_2D is not supported: the image conditions the 3D positions')
+    workers = getattr(config.data, 'num_workers', 2)
+    options = dict(num_workers=workers, collate_fn=Collate(train_ds.image_attr))
+    if workers > 0:
+        options['prefetch_factor'] = getattr(config.data, 'prefetch_factor', 2)
+    sampler = None
+    if getattr(config.training, 'ddp', False):
+        import distributed
+        sampler = DistributedSampler(train_ds, distributed.get_world_size(), distributed.get_rank(),
+                                     shuffle=True, drop_last=config.training.dataloader_drop_last)
+    train = DataLoader(train_ds, config.training.batch_size, shuffle=sampler is None, sampler=sampler,
+                       drop_last=config.training.dataloader_drop_last, persistent_workers=workers > 0,
+                       **options)
+    val = DataLoader(val_ds, config.training.eval_batch_size, **options)
+    test = DataLoader(test_ds, config.training.eval_batch_size, **options)
+    return train, val, test
 
 
-# transform data
-class EdgeComSpectraTransform(object):
-    """
-    Transform data with node and edge features. Compress single/double/triple bond types to one channel.
-    Edge:
-        0-th ch: exist edge or not
-        1-th ch: 0, 1, 2, 3; other bonds, single, double, triple bonds
-        2-th ch: aromatic bond or not
+def inf_iterator(loader):
+    """Yield batches forever, reshuffling each epoch (``set_epoch`` for the DDP sampler)."""
+    epoch = 0
+    while True:
+        if isinstance(loader.sampler, DistributedSampler):
+            loader.sampler.set_epoch(epoch)
+        yield from loader
+        epoch += 1
+
+
+class EdgeComSpectraTransform:
+    """Add ``atom_one_hot`` (N, types) and dense ``edge_one_hot`` (N, N, C) to a molecule.
+
+    Edge channels: bond exists; bond order / 3 (aromatic counts as 0); aromatic, if
+    ``include_aromatic``. Kekulized graphs have no aromatic bonds.
     """
 
-    def __init__(self, atom_type_list, include_aromatic, use_normalize=True):
-        super().__init__()
-        self.atom_type_list = torch.tensor(list(atom_type_list))
+    def __init__(self, atom_types, include_aromatic):
+        self.atom_types = torch.tensor(list(atom_types))
         self.include_aromatic = include_aromatic
-        self.use_normalize = use_normalize
 
-    def __call__(self, data: Data):
-        # add atom type one_hot
-        atom_type = data.atom_type
-        edge_type = data.edge_type
-
-        atom_one_hot = atom_type.unsqueeze(-1) == self.atom_type_list.unsqueeze(0)
-        data.atom_one_hot = atom_one_hot.float()
-
-        edge_bond = edge_type.clone()
-        edge_bond[edge_bond == 4] = 0
-        edge_bond = edge_bond / 3.
-        edge_feat = [edge_bond]
+    def __call__(self, data):
+        data.atom_one_hot = (data.atom_type[:, None] == self.atom_types[None]).float()
+        aromatic = data.edge_type == 4
+        features = [torch.where(aromatic, 0, data.edge_type) / 3]
         if self.include_aromatic:
-            edge_aromatic = (edge_type == 4).float()
-            edge_feat.append(edge_aromatic)
-        edge_feat = torch.stack(edge_feat, dim=-1)
-
-        edge_index = data.edge_index
-        dense_shape = (data.num_nodes, data.num_nodes, edge_feat.size(-1))
-        dense_edge_one_hot = torch.zeros((data.num_nodes**2, edge_feat.size(-1)), device=atom_type.device)
-
-        idx1, idx2 = edge_index[0], edge_index[1]
-        idx = idx1 * data.num_nodes + idx2
-        idx = idx.unsqueeze(-1).expand(edge_feat.size())
-        dense_edge_one_hot.scatter_add_(0, idx, edge_feat)
-        dense_edge_one_hot = dense_edge_one_hot.reshape(dense_shape)
-
-        # edge feature channel [edge_exist; bond_order; aromatic_exist]
-        edge_exist = (dense_edge_one_hot.sum(dim=-1, keepdim=True) != 0).float()
-        dense_edge_one_hot = torch.cat([edge_exist, dense_edge_one_hot], dim=-1)
-        data.edge_one_hot = dense_edge_one_hot
-
-        # log(x+1) normalization for molecular spectral data
-        if self.use_normalize:
-            if hasattr(data, 'ir'):
-                data.ir = torch.log10(data.ir + 1)
-            if hasattr(data, 'uv'):
-                data.uv = torch.log10(data.uv + 1)
-            if hasattr(data, 'raman'):
-                data.raman = torch.log10(data.raman + 1)
+            features.append(aromatic.float())
+        features = torch.stack(features, dim=-1)
+        dense = torch.zeros(data.num_nodes, data.num_nodes, features.size(-1))
+        dense.index_put_((data.edge_index[0], data.edge_index[1]), features, accumulate=True)
+        exists = (dense.sum(-1, keepdim=True) != 0).float()
+        data.edge_one_hot = torch.cat([exists, dense], dim=-1)
         return data
 
 
-class EdgeComCondTransform(object):
-    """
-    Transform data with node and edge features. Compress single/double/triple bond types to one channel.
-    Conditional property.
+class Collate:
+    """Pad molecules to the largest in the batch and stack their images into ``context``."""
 
-    Edge:
-        0-th ch: exist edge or not
-        1-th ch: 0, 1, 2, 3; other bonds, single, double, triple bonds
-        2-th ch: aromatic bond or not
-    """
-
-    def __init__(self, atom_type_list, include_aromatic, property_idx):
-        super().__init__()
-        self.atom_type_list = torch.tensor(list(atom_type_list))
-        self.include_aromatic = include_aromatic
-        self.property_idx = property_idx
-
-    def __call__(self, data: Data):
-        # add atom type one_hot
-        atom_type = data.atom_type
-        edge_type = data.edge_type
-
-        atom_one_hot = atom_type.unsqueeze(-1) == self.atom_type_list.unsqueeze(0)
-        data.atom_one_hot = atom_one_hot.float()
-
-        # dense bond type [N_node, N_node, ch], single(1000), double(0100), triple(0010), aromatic(0001), none(0000)
-        edge_bond = edge_type.clone()
-        edge_bond[edge_bond == 4] = 0
-        edge_bond = edge_bond / 3.
-        edge_feat = [edge_bond]
-        if self.include_aromatic:
-            edge_aromatic = (edge_type == 4).float()
-            edge_feat.append(edge_aromatic)
-        edge_feat = torch.stack(edge_feat, dim=-1)
-
-        edge_index = data.edge_index
-        dense_shape = (data.num_nodes, data.num_nodes, edge_feat.size(-1))
-        dense_edge_one_hot = torch.zeros((data.num_nodes**2, edge_feat.size(-1)), device=atom_type.device)
-
-        idx1, idx2 = edge_index[0], edge_index[1]
-        idx = idx1 * data.num_nodes + idx2
-        idx = idx.unsqueeze(-1).expand(edge_feat.size())
-        dense_edge_one_hot.scatter_add_(0, idx, edge_feat)
-        dense_edge_one_hot = dense_edge_one_hot.reshape(dense_shape)
-
-        edge_exist = (dense_edge_one_hot.sum(dim=-1, keepdim=True) != 0).float()
-        dense_edge_one_hot = torch.cat([edge_exist, dense_edge_one_hot], dim=-1)
-        data.edge_one_hot = dense_edge_one_hot
-
-        properties = data.y
-        if self.property_idx == 11:
-            Cv_atomref = [2.981, 2.981, 2.981, 2.981, 2.981]
-            atom_types = data.atom_type
-            atom_counts = torch.bincount(atom_types, minlength=len(Cv_atomref))
-
-            data.property = properties[0, self.property_idx:self.property_idx+1] - \
-                            torch.sum((atom_counts * torch.tensor(Cv_atomref)))
-        else:
-            property = properties[0, self.property_idx:self.property_idx+1]  # 从 data.y 中取出对应的那一列作为 data.property
-            data.property = property
-
-        return data
-
-
-def pad_node_feature(x, pad_len):
-    x_len, x_dim = x.size()
-    if x_len < pad_len:
-        new_x = x.new_zeros([pad_len, x_dim], dtype=x.dtype)
-        new_x[:x_len, :] = x
-        x = new_x
-    return x.unsqueeze(0)
-
-
-def pad_edge_feature(x, pad_len):
-    # x: [N_node, N_node, ch]
-    x_len, _, x_dim = x.size()
-    if x_len < pad_len:
-        new_x = x.new_zeros([pad_len, pad_len, x_dim])
-        new_x[:x_len, :x_len, :] = x
-        x = new_x
-    return x.unsqueeze(0)
-
-
-def get_node_mask(node_num, pad_len, dtype):
-    node_mask = torch.zeros(pad_len, dtype=dtype)
-    node_mask[:node_num] = 1.
-    return node_mask.unsqueeze(0)
-
-
-# collate function: padding with the max node
-
-def collate_node(items):
-    items = [(item.one_hot, item.pos, item.fc, item.num_atom) for item in items]
-    one_hot, positions, formal_charges, num_atoms = zip(*items)
-    max_node_num = max(num_atoms)
-
-    # padding features
-    one_hot = torch.cat([pad_node_feature(i, max_node_num) for i in one_hot])
-    positions = torch.cat([pad_node_feature(i, max_node_num) for i in positions])
-    formal_charges = torch.cat([pad_node_feature(i.unsqueeze(-1), max_node_num) for i in formal_charges])
-
-    # atom mask
-    node_mask = torch.cat([get_node_mask(i, max_node_num, one_hot.dtype) for i in num_atoms])
-
-    # edge mask
-    edge_mask = node_mask.unsqueeze(1) * node_mask.unsqueeze(2)
-    diag_mask = ~torch.eye(edge_mask.size(1), dtype=torch.bool).unsqueeze(0)
-    edge_mask *= diag_mask
-    edge_mask = edge_mask.reshape(-1, 1)
-
-    # repack
-    return dict(
-        one_hot=one_hot,
-        atom_mask=node_mask,
-        edge_mask=edge_mask,
-        positions=positions,
-        formal_charges=formal_charges
-    )
-
-
-def collate_edge(items):
-    items = [(item.atom_one_hot, item.edge_one_hot, item.fc, item.pos, item.num_atom) for item in items]
-    atom_one_hot, edge_one_hot, formal_charges, positions, num_atoms = zip(*items)
-
-    max_node_num = max(num_atoms)
-
-    # padding features
-    atom_one_hot = torch.cat([pad_node_feature(i, max_node_num) for i in atom_one_hot])
-    formal_charges = torch.cat([pad_node_feature(i.unsqueeze(-1), max_node_num) for i in formal_charges])
-    positions = torch.cat([pad_node_feature(i, max_node_num) for i in positions])
-    edge_one_hot = torch.cat([pad_edge_feature(i, max_node_num) for i in edge_one_hot])
-
-    # atom mask
-    node_mask = torch.cat([get_node_mask(i, max_node_num, atom_one_hot.dtype) for i in num_atoms])
-
-    # edge mask
-    edge_mask = node_mask.unsqueeze(1) * node_mask.unsqueeze(2)
-    diag_mask = ~torch.eye(edge_mask.size(1), dtype=torch.bool).unsqueeze(0)
-    edge_mask *= diag_mask
-    edge_mask = edge_mask.reshape(-1, 1)
-
-    # repack
-    return dict(
-        atom_one_hot=atom_one_hot,
-        edge_one_hot=edge_one_hot,
-        positions=positions,
-        formal_charges=formal_charges,
-        atom_mask=node_mask,
-        edge_mask=edge_mask
-    )
-
-
-def collate_edge_2D(items):
-    items = [(item.atom_one_hot, item.edge_one_hot, item.fc, item.num_atom) for item in items]
-    atom_one_hot, edge_one_hot, formal_charges, num_atoms = zip(*items)
-
-    max_node_num = max(num_atoms)
-
-    # padding features
-    atom_one_hot = torch.cat([pad_node_feature(i, max_node_num) for i in atom_one_hot])
-    formal_charges = torch.cat([pad_node_feature(i.unsqueeze(-1), max_node_num) for i in formal_charges])
-    edge_one_hot = torch.cat([pad_edge_feature(i, max_node_num) for i in edge_one_hot])
-
-    # atom mask
-    node_mask = torch.cat([get_node_mask(i, max_node_num, atom_one_hot.dtype) for i in num_atoms])
-
-    # edge mask
-    edge_mask = node_mask.unsqueeze(1) * node_mask.unsqueeze(2)
-    diag_mask = ~torch.eye(edge_mask.size(1), dtype=torch.bool).unsqueeze(0)
-    edge_mask *= diag_mask
-    edge_mask = edge_mask.reshape(-1, 1)
-
-    # repack
-    return dict(
-        atom_one_hot=atom_one_hot,
-        edge_one_hot=edge_one_hot,
-        formal_charges=formal_charges,
-        atom_mask=node_mask,
-        edge_mask=edge_mask
-    )
-
-
-def collate_cond(items):
-    # collate_fn for the condition generation
-    items = [(item.atom_one_hot, item.edge_one_hot, item.fc, item.pos, item.num_atom, item.property) for item in items]
-    atom_one_hot, edge_one_hot, formal_charges, positions, num_atoms, property = zip(*items)
-
-    max_node_num = max(num_atoms)
-
-    # padding features
-    atom_one_hot = torch.cat([pad_node_feature(i, max_node_num) for i in atom_one_hot])
-    formal_charges = torch.cat([pad_node_feature(i.unsqueeze(-1), max_node_num) for i in formal_charges])
-    positions = torch.cat([pad_node_feature(i, max_node_num) for i in positions])
-    edge_one_hot = torch.cat([pad_edge_feature(i, max_node_num) for i in edge_one_hot])
-
-    # atom mask
-    node_mask = torch.cat([get_node_mask(i, max_node_num, atom_one_hot.dtype) for i in num_atoms])
-
-    # edge mask
-    edge_mask = node_mask.unsqueeze(1) * node_mask.unsqueeze(2)
-    diag_mask = ~torch.eye(edge_mask.size(1), dtype=torch.bool).unsqueeze(0)
-    edge_mask *= diag_mask
-    edge_mask = edge_mask.reshape(-1, 1)
-
-    # context property
-    property = torch.stack(property, dim=0)
-
-    # repack
-    return dict(
-        atom_one_hot=atom_one_hot,
-        edge_one_hot=edge_one_hot,
-        positions=positions,
-        formal_charges=formal_charges,
-        atom_mask=node_mask,
-        edge_mask=edge_mask,
-        context=property
-    )
-
-class CollateSpectra(object):
-    def __init__(self, spectra_version='allspectra', aug_rotation=False, aug_translation=False, aug_translation_scale=0.01):
-        self.spectra_version = spectra_version
-        self.aug_rotation = aug_rotation
-        self.aug_translation = aug_translation
-        self.aug_translation_scale = aug_translation_scale
-
-    def augment_positions(self, positions, atom_mask):
-        batch_size = positions.shape[0]
-        num_max_nodes = positions.shape[1]
-        dtype = positions.dtype
-        
-        # Create mask to distinguish between actual atoms and padding positions
-        mask = atom_mask.unsqueeze(-1)  # [batch_size, num_nodes, 1]
-        
-        if self.aug_rotation:
-            rot_aug = Rotation.random(batch_size)
-            # Only rotate actual atom positions
-            positions_np = positions.numpy()
-            # Rotate each molecule
-            for i in range(batch_size):
-                positions_np[i] = rot_aug[i].apply(positions_np[i])
-            positions = torch.from_numpy(positions_np).to(dtype)
-            # Keep padding positions as 0
-            positions = positions * mask
-            
-        if self.aug_translation:
-            # Only translate actual atom positions
-            trans_aug = self.aug_translation_scale * torch.randn(batch_size, 1, 3, dtype=dtype).repeat(1, num_max_nodes, 1)
-            positions = positions + trans_aug
-            # Keep padding positions as 0
-            positions = positions * mask
-            
-        return positions
-
-    def pad_and_mask(self, atom_one_hot, edge_one_hot, formal_charges, positions, num_atoms):
-        max_node_num = max(num_atoms)
-
-        # padding features
-        atom_one_hot = torch.cat([pad_node_feature(i, max_node_num) for i in atom_one_hot])
-        formal_charges = torch.cat([pad_node_feature(i.unsqueeze(-1), max_node_num) for i in formal_charges])
-        positions = torch.cat([pad_node_feature(i, max_node_num) for i in positions])
-        edge_one_hot = torch.cat([pad_edge_feature(i, max_node_num) for i in edge_one_hot])
-
-        # atom mask
-        node_mask = torch.cat([get_node_mask(i, max_node_num, atom_one_hot.dtype) for i in num_atoms])
-
-        # edge mask
-        edge_mask = node_mask.unsqueeze(1) * node_mask.unsqueeze(2)
-        diag_mask = ~torch.eye(edge_mask.size(1), dtype=torch.bool).unsqueeze(0)
-        edge_mask *= diag_mask
-        edge_mask = edge_mask.reshape(-1, 1)
-
-        return atom_one_hot, edge_one_hot, formal_charges, positions, node_mask, edge_mask
+    def __init__(self, image_attr):
+        self.image_attr = image_attr
 
     def __call__(self, items):
-        # Uniformly extract all data
-        items = [(item.atom_one_hot, item.edge_one_hot, item.fc, item.pos, item.num_atom, 
-                 item.uv, item.ir, item.raman) for item in items]
-        atom_one_hot, edge_one_hot, formal_charges, positions, num_atoms, uv, ir, raman = zip(*items)
-
-        # Use base class pad_and_mask method
-        atom_one_hot, edge_one_hot, formal_charges, positions, node_mask, edge_mask = self.pad_and_mask(
-            atom_one_hot, edge_one_hot, formal_charges, positions, num_atoms
-        )
-
-        # Construct spectra based on spectra_version
-        if self.spectra_version == 'allspectra':
-            spectra = [torch.stack(uv, dim=0), torch.stack(ir, dim=0), torch.stack(raman, dim=0)]
-        elif self.spectra_version == 'ir':
-            spectra = torch.stack(ir, dim=0)
-        elif self.spectra_version == 'uv':
-            spectra = torch.stack(uv, dim=0)
-        elif self.spectra_version == 'raman':
-            spectra = torch.stack(raman, dim=0)
-        else:
-            raise ValueError(f'Invalid spectra version: {self.spectra_version}')
-
-        # Data augmentation
-        positions = self.augment_positions(positions, node_mask)
-
+        n = max(int(item.num_atom) for item in items)
+        atom_mask = torch.stack([torch.arange(n) < int(item.num_atom) for item in items]).float()
+        edge_mask = atom_mask[:, :, None] * atom_mask[:, None, :] * (1 - torch.eye(n))
         return dict(
-            atom_one_hot=atom_one_hot,
-            edge_one_hot=edge_one_hot,
-            positions=positions,
-            formal_charges=formal_charges,
-            atom_mask=node_mask,
-            edge_mask=edge_mask,
-            context=spectra
+            atom_one_hot=_pad_nodes([item.atom_one_hot for item in items], n),
+            edge_one_hot=_pad_edges([item.edge_one_hot for item in items], n),
+            positions=_pad_nodes([item.pos for item in items], n),
+            formal_charges=_pad_nodes([item.fc[:, None] for item in items], n),
+            atom_mask=atom_mask,
+            edge_mask=edge_mask.reshape(-1, 1),
+            context=torch.stack([getattr(item, self.image_attr) for item in items]),
         )
 
 
-class CollateTers(CollateSpectra):
-    """Collate for image conditioning; ``context`` is the ``(B, C, H, W)`` image batch."""
-
-    def __init__(self, aug_rotation=False, aug_translation=False, aug_translation_scale=0.01):
-        # spectra_version does not apply to images
-        super().__init__(spectra_version=None, aug_rotation=aug_rotation,
-                         aug_translation=aug_translation,
-                         aug_translation_scale=aug_translation_scale)
-
-    # Data attribute that holds the image.
-    image_attr = 'ters'
-
-    def __call__(self, items):
-        items = [(item.atom_one_hot, item.edge_one_hot, item.fc, item.pos, item.num_atom,
-                  getattr(item, self.image_attr)) for item in items]
-        atom_one_hot, edge_one_hot, formal_charges, positions, num_atoms, ters = zip(*items)
-
-        atom_one_hot, edge_one_hot, formal_charges, positions, node_mask, edge_mask = \
-            self.pad_and_mask(atom_one_hot, edge_one_hot, formal_charges, positions, num_atoms)
-
-        positions = self.augment_positions(positions, node_mask)
-
-        return dict(
-            atom_one_hot=atom_one_hot,
-            edge_one_hot=edge_one_hot,
-            positions=positions,
-            formal_charges=formal_charges,
-            atom_mask=node_mask,
-            edge_mask=edge_mask,
-            context=torch.stack(ters, dim=0)
-        )
+def _pad_nodes(tensors, n):
+    return torch.stack([F.pad(x, (0, 0, 0, n - len(x))) for x in tensors])
 
 
-class CollateStm(CollateTers):
-    """Collate for STM z-stack conditioning; reads the image from ``data.stm``.
-
-    ``aug_rotation`` must stay False: rotating coordinates without the images breaks their
-    correspondence. Nothing here enforces it.
-    """
-
-    image_attr = 'stm'
-
-
-class CollateSpectr2D(object):
-    def __init__(self, spectra_version='allspectra'):
-        self.spectra_version = spectra_version
-
-    def pad_and_mask(self, atom_one_hot, edge_one_hot, formal_charges, num_atoms):
-        max_node_num = max(num_atoms)
-
-        # padding features
-        atom_one_hot = torch.cat([pad_node_feature(i, max_node_num) for i in atom_one_hot])
-        formal_charges = torch.cat([pad_node_feature(i.unsqueeze(-1), max_node_num) for i in formal_charges])
-        edge_one_hot = torch.cat([pad_edge_feature(i, max_node_num) for i in edge_one_hot])
-
-        # atom mask
-        node_mask = torch.cat([get_node_mask(i, max_node_num, atom_one_hot.dtype) for i in num_atoms])
-
-        # edge mask
-        edge_mask = node_mask.unsqueeze(1) * node_mask.unsqueeze(2)
-        diag_mask = ~torch.eye(edge_mask.size(1), dtype=torch.bool).unsqueeze(0)
-        edge_mask *= diag_mask
-        edge_mask = edge_mask.reshape(-1, 1)
-
-        return atom_one_hot, edge_one_hot, formal_charges, node_mask, edge_mask
-
-    def __call__(self, items):
-        # Uniformly extract all data
-        items = [(item.atom_one_hot, item.edge_one_hot, item.fc, item.num_atom, 
-                    item.uv, item.ir, item.raman) for item in items]
-        atom_one_hot, edge_one_hot, formal_charges, num_atoms, uv, ir, raman = zip(*items)
-
-        # Use base class pad_and_mask method
-        atom_one_hot, edge_one_hot, formal_charges, node_mask, edge_mask = self.pad_and_mask(
-            atom_one_hot, edge_one_hot, formal_charges, num_atoms
-        )
-
-        # Construct spectra based on spectra_version
-        if self.spectra_version == 'allspectra':
-            spectra = [torch.stack(uv, dim=0), torch.stack(ir, dim=0), torch.stack(raman, dim=0)]
-        elif self.spectra_version == 'ir':
-            spectra = torch.stack(ir, dim=0)
-        elif self.spectra_version == 'uv':
-            spectra = torch.stack(uv, dim=0)
-        elif self.spectra_version == 'raman':
-            spectra = torch.stack(raman, dim=0)
-        else:
-            raise ValueError(f'Invalid spectra version: {self.spectra_version}')
-
-
-        return dict(
-            atom_one_hot=atom_one_hot,
-            edge_one_hot=edge_one_hot,
-            formal_charges=formal_charges,
-            atom_mask=node_mask,
-            edge_mask=edge_mask,
-            context=spectra
-        )
+def _pad_edges(tensors, n):
+    return torch.stack([F.pad(x, (0, 0, 0, n - len(x), 0, n - len(x))) for x in tensors])

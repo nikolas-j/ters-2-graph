@@ -33,7 +33,7 @@ def set_palette(info_name):
 
 CUBE_LABEL = 'TERS cube'          # Overridden by --info-name.
 
-set_palette('ters_hcno')
+set_palette('qm9_second_half')
 BOND_LW = {1: 1.6, 2: 2.8, 3: 3.8, 4: 2.2}
 
 
@@ -133,13 +133,12 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument('--dir', required=True, help='a <workdir>/generated directory')
     ap.add_argument('--splits', nargs='+', default=['test', 'val'])
-    ap.add_argument('--info-name', default='ters_hcno',
-                    help='datasets_config entry supplying the element palette '
-                         "(use 'stm_10elem' for the STM corpus)")
+    ap.add_argument('--info-name', default='qm9_second_half',
+                    help='datasets_config entry supplying the element palette')
     args = ap.parse_args()
     set_palette(args.info_name)
     global CUBE_LABEL
-    CUBE_LABEL = 'STM z-stack' if args.info_name == 'stm_10elem' else 'TERS cube'
+    CUBE_LABEL = 'image'
     figdir = os.path.join(args.dir, 'figures'); os.makedirs(figdir, exist_ok=True)
     with open(os.path.join(args.dir, 'summary.pkl'), 'rb') as f:
         summary = pickle.load(f)

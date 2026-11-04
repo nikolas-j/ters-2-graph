@@ -262,7 +262,7 @@ class DMT(nn.Module):
 
         # Conditioning encoder; every branch must output (B, hidden_dim) for cond_lin.
         self.spectra_version = getattr(config.data, 'spectra_version', None)
-        _cond_kinds = {'TERS': 'ters', 'STM': 'stm'}
+        _cond_kinds = {'TERS': 'ters', 'STM': 'stm', 'QM9': 'ters'}
         self.cond_encoder_kind = _cond_kinds.get(config.data.name, 'specformer')
 
         if self.cond_encoder_kind == 'ters':

@@ -1,21 +1,12 @@
-"""Auxiliary QM9S-TERS config for `--config_original_qm9`.
+"""Auxiliary QM9S-TERS config for ``--config_original_qm9``: the reference molecules for the metrics.
 
-configs/base_ters.py with the data paths and element set of configs/diffspectra_ters_qm9s.py.
+The main config's dataset without images, so the two always describe the same molecules.
 """
 
-from configs.base_ters import get_config as _base_ters_config
-from configs.diffspectra_ters_qm9s import QM9S_GRAPHS, QM9S_ROOT
+from configs.diffspectra_ters_qm9s import get_config as _main_config
 
 
 def get_config():
-    config = _base_ters_config()
-    data = config.data
-
-    data.root = QM9S_ROOT
-    data.graph_root = QM9S_GRAPHS
-    data.info_name = 'qm9_second_half'   # H/C/N/O/F
-    data.atom_types = 5                  # must match the main config
-    data.max_node = 29                   # max atoms per molecule; not read
-    config.eval.num_samples = 6279
-
+    config = _main_config()
+    config.data.load_images = False
     return config

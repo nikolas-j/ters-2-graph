@@ -1,4 +1,4 @@
-"""Generate molecules conditioned on TERS cubes or STM z-stacks.
+"""Generate molecules conditioned on images (QM9S-TERS, QM9-STM).
 
 Each sample takes its atom count from the target molecule. Writes `mols_*.pkl` for
 target-similarity scoring, `processed_*.pkl` for distributional scoring and, unless
@@ -6,7 +6,7 @@ target-similarity scoring, `processed_*.pkl` for distributional scoring and, unl
 
 Usage
 -----
-    python sample.py --modality stm --ckpt CKPT --split test
+    python sample.py --modality ters --ckpt CKPT --split test
 """
 import argparse, csv, json, os, pickle, random, time
 
@@ -31,8 +31,8 @@ from ml_collections import config_flags
 
 # Per-modality defaults: (config, aux config).
 MODALITY_DEFAULTS = {
-    'ters': ('configs/diffspectra_ters.py', 'configs/base_ters.py'),
-    'stm':  ('configs/diffspectra_stm.py', 'configs/base_stm.py'),
+    'ters': ('configs/diffspectra_ters_qm9s.py', 'configs/base_ters_qm9s.py'),
+    'stm': ('configs/diffspectra_stm_qm9.py', 'configs/base_stm_qm9.py'),
 }
 
 
@@ -49,20 +49,6 @@ def canon(mol):
         return Chem.MolToSmiles(mol)
     except Exception:
         return None
-
-
-def cube_of(data):
-    """Return the conditioning cube of a TERS (``.ters``) or STM (``.stm``) sample."""
-    for attr in ('ters', 'stm'):
-        if hasattr(data, attr):
-            return getattr(data, attr)
-    try:
-        present = sorted(str(k) for k in data.keys)
-    except (AttributeError, TypeError):
-        present = sorted(k for k in vars(data) if not k.startswith('_')) or '<unknown>'
-    raise AttributeError(
-        f'sample: no conditioning cube on this sample (looked for .ters and .stm). '
-        f'Attributes present: {present}')
 
 
 def write_portable(out_dir, split, tag, results, rd_mols, n_samples):
@@ -171,21 +157,17 @@ def main():
 
     ck = torch.load(args.ckpt, map_location=config.device, weights_only=False)
     # Infer the pool size from the checkpoint; head.2 is Linear(filters[-1] * pool_size**2, nf).
-    _pfx = 'stm' if config.data.name == 'STM' else 'ters'
-    _defaults = {'stm': (64, 128, 256), 'ters': (64, 128, 256, 512)}[_pfx]
-    _hw = next((v for k, v in ck['model'].items() if k.endswith('cond_encoder.head.2.weight')), None)
-    if _hw is not None:
-        _filters = tuple(getattr(config.model, f'{_pfx}_filters', _defaults))
-        _grid = _hw.shape[1] // _filters[-1]
-        _inferred = int(round(_grid ** 0.5))
-        if _inferred * _inferred * _filters[-1] != _hw.shape[1]:
-            raise ValueError(f'cannot infer {_pfx}_pool_size: head.2.weight has in_features '
-                             f'{_hw.shape[1]}, not a square multiple of {_filters[-1]}')
-        if _inferred != getattr(config.model, f'{_pfx}_pool_size', 1):
-            print(f'{_pfx}_pool_size: config says '
-                  f'{getattr(config.model, f"{_pfx}_pool_size", 1)}, '
-                  f'checkpoint says {_inferred} -- using the checkpoint')
-        setattr(config.model, f'{_pfx}_pool_size', _inferred)
+    head = next((v for k, v in ck['model'].items() if k.endswith('cond_encoder.head.2.weight')), None)
+    if head is not None:
+        channels = config.model.ters_filters[-1]
+        pool_size = int(round((head.shape[1] // channels) ** 0.5))
+        if pool_size * pool_size * channels != head.shape[1]:
+            raise ValueError(f'cannot infer ters_pool_size: head.2.weight has in_features '
+                             f'{head.shape[1]}, not a square multiple of {channels}')
+        if pool_size != config.model.ters_pool_size:
+            print(f'ters_pool_size: config says {config.model.ters_pool_size}, '
+                  f'checkpoint says {pool_size}; using the checkpoint')
+        config.model.ters_pool_size = pool_size
 
     model = create_model(config)
     ema = ExponentialMovingAverage(model.parameters(), decay=config.model.ema_decay)
@@ -230,7 +212,7 @@ def main():
         na = mol.num_atom
         n_at = int(na.item()) if torch.is_tensor(na) else int(na)
         for _ in range(args.n_samples):            # same cube, different initial noise
-            cubes.append(cube_of(cube_mol))
+            cubes.append(cube_mol.image)
             n_nodes.append(n_at)
         truth.append(mol.rdmol)
     truth_graphs = [] if args.no_geometry else [ds[int(i)] for i in idx]
@@ -265,7 +247,7 @@ def main():
             f'batch of {cb} does not divide across {n_gpu} GPUs. DMT.forward reshapes a '
             f'flattened edge_mask by the xh batch size, so an uneven DataParallel split makes '
             f'the two disagree. The padding above should prevent this.')
-        # (B, C, H, W), stacked as in CollateTers.
+        # (B, C, H, W), stacked as in build_dataset.Collate.
         context = torch.stack(chunk_cubes, dim=0).to(config.device)
         pos, one_hot, fc, edge_types = sample_batch(model, sampler, context, cn, config,
                                                     inverse_scaler)
@@ -363,7 +345,7 @@ def main():
                                  'atom_type': g.atom_type[:n].cpu().numpy(),
                                  'edges': dense_edges(g, n).numpy(),
                                  'smiles': results[[r['mol'] for r in results].index(mi)]['truth_smiles']})
-            c = cube_of(g).cpu().numpy()                   # (C, H, W) normalised cube
+            c = g.image.cpu().numpy()                      # (C, H, W) normalised image
             geo['n_channels'] = int(c.shape[0])
             geo['cube_sum'].append(c.sum(axis=0))
             geo['cube_max'].append(c.max(axis=0))

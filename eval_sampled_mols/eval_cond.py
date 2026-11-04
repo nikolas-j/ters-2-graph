@@ -7,7 +7,7 @@ Usage
 -----
     python -m eval_sampled_mols.eval_cond --samples PROCESSED_PKL
     python -m eval_sampled_mols.eval_cond --samples PKL [PKL ...] --n-jobs 32
-    python -m eval_sampled_mols.eval_cond --config-qm9 configs/base_stm.py --ground-truth 500
+    python -m eval_sampled_mols.eval_cond --config-qm9 configs/base_ters_qm9s.py --ground-truth 500
 """
 import argparse
 import hashlib
@@ -243,7 +243,7 @@ def main():
                          'is empty.')
     ap.add_argument('--config-qm9', default=None,
                     help='aux config for the reference sets (default: the one recorded in the '
-                         'sample pickle, i.e. base_stm.py or base_ters.py)')
+                         'sample pickle, e.g. base_ters_qm9s.py)')
     ap.add_argument('--max-ref', type=int, default=0,
                     help='cap each reference set at N molecules (0 = all). For smoke runs '
                          'only: a truncated reference changes FCD and inflates novelty, so the '

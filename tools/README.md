@@ -1,10 +1,10 @@
 # Tools
 
-Tools are grouped by task. TERS and STM share the evaluation, diagnostic, and visualization commands unless a command says otherwise.
+Tools are grouped by task. QM9S-TERS and QM9-STM share the evaluation, diagnostic, and visualization commands.
 
 ## Main workflow
 
-1. Generate cube-conditioned candidates with `python sample.py --modality ters|stm ...` (repository root).
+1. Generate image-conditioned candidates with `python sample.py --modality ters|stm ...` (repository root).
 2. Score recovery against target molecules with `python -m eval_sampled_mols.paper_metrics --cells NAME=/path/to/mols_test.pkl`.
 3. Score validity, stability, and distributional quality with `python -m eval_sampled_mols.eval_cond --samples /path/to/processed_test.pkl`.
 4. Merge independently generated shards with `python merge_shards.py ...` (repository root) before scoring.
@@ -31,5 +31,5 @@ Runnable evaluators live in `eval_sampled_mols/`; reusable metric functions live
 ## Folders
 
 - `diagnostics/`: conditioning, checkpoint progress, split, stability calibration, and representation probes.
-- `analysis/`: STM corpus analysis and shared planarity calculations.
+- `analysis/`: planarity calculations.
 - `visualization/`: molecule renderings, generated geometry plots, and paper figures.
