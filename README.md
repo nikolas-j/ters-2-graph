@@ -45,14 +45,12 @@ ters-2-graph/
 │   ├── image_dataset.py    # ImageGraphDataset: cached graphs + images read from HDF5
 │   ├── build_dataset.py    # get_dataset, get_dataloader, graph features, batching
 │   ├── transforms.py       # normalisation, slice selection, augmentation
-│   ├── datasets_config.py  # element sets (data.info_name)
-│   └── qm9s_dataset.py     # DiffSpectra's QM9S spectrum dataset (unused here)
+│   └── datasets_config.py  # element sets (data.info_name)
 ├── models/
 │   ├── dmt.py              # DMT denoiser; builds the conditioning encoder
 │   ├── layers.py           # DMT attention and message-passing layers
 │   ├── ters_encoder.py     # image encoder
 │   ├── stm_encoder*.py     # encoders for the old 128×128×14 STM corpus (unused)
-│   ├── specformer*.py      # DiffSpectra's 1D spectrum encoder
 │   ├── ema.py              # exponential moving average of weights
 │   └── utils.py            # model registry and create_model
 ├── diffusion/, sampling/   # noise schedule and samplers

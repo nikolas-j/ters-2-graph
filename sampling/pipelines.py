@@ -3,17 +3,15 @@
 Moved from DiffSpectra sampling.py.
 """
 
-import random
-
 import numpy as np
 import torch
 
 from models.utils import (sample_combined_position_feature_noise, assert_mean_zero_with_mask,
-                          sample_symmetric_edge_feature_noise, sample_gaussian_with_mask)
+                          sample_symmetric_edge_feature_noise)
 from utils import get_self_cond_fn
 
-from .postprocess import mol_process, mol_process_2D, post_process, post_process_2D
-from .samplers import AncestralSampler, AncestralSampler_2D
+from .postprocess import mol_process, post_process
+from .samplers import AncestralSampler
 
 
 def get_sampling_fn(config, noise_scheduler, batch_size, n_samples, inverse_scaler, val_ds, eps=1e-3):
@@ -26,18 +24,13 @@ def get_sampling_fn(config, noise_scheduler, batch_size, n_samples, inverse_scal
     edge_nf = config.model.edge_ch
     compress_edge = config.data.compress_edge
     self_cond = config.model.self_cond
-    only_2D = config.only_2D
-    spectra_version = getattr(config.data, 'spectra_version', None)
     image_attr = getattr(val_ds, 'image_attr', None)  # 'image' for ImageGraphDataset
 
     num_sampling_rounds = int(np.ceil(n_samples / batch_size))
     if config.sampling.method == 'ancestral':
         time_steps = torch.linspace(noise_scheduler.T, eps, sampling_steps, device=device)
-        if only_2D:
-            sampler = AncestralSampler_2D(noise_scheduler, time_steps, config.model.pred_data, self_cond)
-        else:
-            sampler = AncestralSampler(noise_scheduler, time_steps, config.model.pred_data, pred_edge, self_cond,
-                                       get_self_cond_fn(config))
+        sampler = AncestralSampler(noise_scheduler, time_steps, config.model.pred_data, pred_edge, self_cond,
+                                   get_self_cond_fn(config))
     else:
         raise ValueError('Invalid sampling method!')
 
@@ -54,45 +47,16 @@ def get_sampling_fn(config, noise_scheduler, batch_size, n_samples, inverse_scal
             for r in range(num_sampling_rounds):
                 sampled_val_mol_id= permute_val_mol_id[r * batch_size:(r + 1) * batch_size]
                 sampled_val_mol = []
-                sampled_val_uv = []
-                sampled_val_ir = []
-                sampled_val_raman = []
                 sampled_cubes = []
                 n_nodes = []
                 for i in sampled_val_mol_id:
                     mol = val_ds[i]
                     sampled_val_mol.append(mol)
-                    if spectra_version=='uv':
-                        sampled_val_uv.append(mol.uv)
-                    if spectra_version=='ir':
-                        sampled_val_ir.append(mol.ir)
-                    if spectra_version=='raman':
-                        sampled_val_raman.append(mol.raman)
-                    if spectra_version=='allspectra':
-                        sampled_val_uv.append(mol.uv)
-                        sampled_val_ir.append(mol.ir)
-                        sampled_val_raman.append(mol.raman)
                     if image_attr is not None:
                         sampled_cubes.append(getattr(mol, image_attr))
                     sampled_val_pos.append(mol.pos)
                     sampled_val_rdkit_mols.append(mol.rdmol)
                     n_nodes.append(int(mol.num_atom))
-                # Use torch.stack() to merge tensor list into a single tensor
-                if spectra_version=='uv':
-                    sampled_val_uv = torch.stack(sampled_val_uv)   # [128, 1, 3501]
-                    context = sampled_val_uv                       # [128, 1, 3501]
-                if spectra_version=='ir':
-                    sampled_val_ir = torch.stack(sampled_val_ir)   # [128, 1, 3501]
-                    context = sampled_val_ir                       # [128, 1, 3501]
-                if spectra_version=='raman':
-                    sampled_val_raman = torch.stack(sampled_val_raman)   # [128, 1, 3501]
-                    context = sampled_val_raman                       # [128, 1, 3501]
-                if spectra_version=='allspectra':
-                    sampled_val_uv = torch.stack(sampled_val_uv)   # [128, 1, 3501]
-                    sampled_val_ir = torch.stack(sampled_val_ir)   # [128, 1, 3501]
-                    sampled_val_raman = torch.stack(sampled_val_raman)   # [128, 1, 3501]
-                    context = [sampled_val_uv, sampled_val_ir, sampled_val_raman]
-                # sampled_val_num_atoms = torch.stack(sampled_val_num_atoms)
                 
                 if image_attr is not None:
                     context = torch.stack(sampled_cubes).to(device)  # (B, C, H, W)
@@ -143,89 +107,7 @@ def get_sampling_fn(config, noise_scheduler, batch_size, n_samples, inverse_scal
         # Save ground truth mol for coordinate error calculation and visualization
         return processed_mols[:n_samples], sampled_val_pos[:n_samples], sampled_val_rdkit_mols[:n_samples]
 
-    def sampling_fn_2D(model):
-        model.eval()
-        processed_mols = []
-        with torch.no_grad():
-            num_mol_val = len(val_ds)
-            permute_val_mol_id = torch.randperm(num_mol_val)
-
-            for r in range(num_sampling_rounds):
-                sampled_val_mol_id= permute_val_mol_id[r * batch_size:(r + 1) * batch_size]
-                sampled_val_mol = []
-                sampled_val_uv = []
-                sampled_val_ir = []
-                sampled_val_raman = []
-                sampled_val_rdkit_mols = []
-                n_nodes = []
-                for i in sampled_val_mol_id:
-                    mol = val_ds[i]
-                    sampled_val_mol.append(mol)
-                    if spectra_version=='uv':
-                        sampled_val_uv.append(mol.uv)
-                    if spectra_version=='ir':
-                        sampled_val_ir.append(mol.ir)
-                    if spectra_version=='raman':
-                        sampled_val_raman.append(mol.raman)
-                    if spectra_version=='allspectra':
-                        sampled_val_uv.append(mol.uv)
-                        sampled_val_ir.append(mol.ir)
-                        sampled_val_raman.append(mol.raman)
-                        sampled_val_rdkit_mols.append(mol.rdmol)
-                    n_nodes.append(mol.num_atom.item())
-                # Use torch.stack() to merge tensor list into a single tensor
-                if spectra_version=='uv':
-                    sampled_val_uv = torch.stack(sampled_val_uv)   # [128, 1, 3501]
-                    context = sampled_val_uv                       # [128, 1, 3501]
-                if spectra_version=='ir':
-                    sampled_val_ir = torch.stack(sampled_val_ir)   # [128, 1, 3501]
-                    context = sampled_val_ir                       # [128, 1, 3501]
-                if spectra_version=='raman':
-                    sampled_val_raman = torch.stack(sampled_val_raman)   # [128, 1, 3501]
-                    context = sampled_val_raman                       # [128, 1, 3501]
-                if spectra_version=='allspectra':
-                    sampled_val_uv = torch.stack(sampled_val_uv)   # [128, 1, 3501]
-                    sampled_val_ir = torch.stack(sampled_val_ir)   # [128, 1, 3501]
-                    sampled_val_raman = torch.stack(sampled_val_raman)   # [128, 1, 3501]
-                    context = [sampled_val_uv, sampled_val_ir, sampled_val_raman]
-                # sampled_val_num_atoms = torch.stack(sampled_val_num_atoms)
-                
-                max_n_nodes = max(n_nodes)
-
-                # construct node and edge mask
-                node_mask = torch.zeros(batch_size, max_n_nodes)
-                for i in range(batch_size):
-                    node_mask[i, 0:n_nodes[i]] = 1
-                edge_mask = node_mask.unsqueeze(1) * node_mask.unsqueeze(2)
-                diag_mask = ~torch.eye(edge_mask.size(1), dtype=torch.bool).unsqueeze(0)
-                edge_mask *= diag_mask
-                edge_mask = edge_mask.view(batch_size * max_n_nodes * max_n_nodes, 1).to(device)
-                node_mask = node_mask.unsqueeze(2).to(device)
-
-                # sample initial noise
-                # z = sample_feature_noise(batch_size, max_n_nodes, node_nf, node_mask)
-                z = sample_gaussian_with_mask((batch_size, max_n_nodes, node_nf), device, node_mask)
-
-                # sample initial edge noise
-                edge_z = sample_symmetric_edge_feature_noise(batch_size, max_n_nodes, edge_nf, edge_mask)
-                # sampling procedure
-                x_node, x_edge = sampler.sampling(model, z, node_mask, edge_mask, edge_z, context)
-                # postprocessing
-                one_hot, fc, edge_types = post_process_2D(x_node, atom_types, include_fc, node_mask,
-                                                            inverse_scaler, x_edge, edge_mask, compress_edge)
-
-                # process tensors
-                processed_mols += mol_process_2D(one_hot, fc, n_nodes, edge_types)
-                print('Generate {}, Total {}.'.format(len(processed_mols), n_samples))
-
-        # shuffle mols and pick n_samples
-        random.shuffle(processed_mols)
-        return processed_mols[:n_samples], sampled_val_rdkit_mols[:n_samples]
-
-    if only_2D:
-        return sampling_fn_2D
-    else:
-        return sampling_fn
+    return sampling_fn
 
 
 
@@ -239,19 +121,14 @@ def get_cond_sampling_eval_fn(config, noise_scheduler, batch_size, n_samples, in
     edge_nf = config.model.edge_ch
     compress_edge = config.data.compress_edge
     self_cond = config.model.self_cond
-    only_2D = config.only_2D
-    spectra_version = getattr(config.data, 'spectra_version', None)
     image_attr = getattr(test_ds, 'image_attr', None)  # 'image' for ImageGraphDataset
 
     num_sampling_rounds = int(np.ceil(n_samples / batch_size))
     if config.sampling.method == 'ancestral':
         time_steps = torch.linspace(noise_scheduler.T, eps, sampling_steps, device=device)
-        if only_2D:
-            sampler = AncestralSampler_2D(noise_scheduler, time_steps, config.model.pred_data, self_cond)
-        else:
-            sampler = AncestralSampler(noise_scheduler, time_steps, config.model.pred_data, pred_edge, 
-                                        self_cond, get_self_cond_fn(config), 
-                                        sampling_temperature=config.eval.sampling_temperature)
+        sampler = AncestralSampler(noise_scheduler, time_steps, config.model.pred_data, pred_edge, 
+                                    self_cond, get_self_cond_fn(config), 
+                                    sampling_temperature=config.eval.sampling_temperature)
     else:
         raise ValueError('Invalid sampling method!')
 
@@ -270,44 +147,16 @@ def get_cond_sampling_eval_fn(config, noise_scheduler, batch_size, n_samples, in
             for r in range(num_sampling_rounds):
                 sampled_test_mol_id= permute_test_mol_id[r * batch_size:(r + 1) * batch_size]
                 sampled_test_mol = []
-                sampled_val_uv = []
-                sampled_val_ir = []
-                sampled_val_raman = []
                 sampled_cubes = []
                 n_nodes = []
                 for i in sampled_test_mol_id:
                     mol = test_ds[i]
                     sampled_test_mol.append(mol)
-                    if spectra_version=='uv':
-                        sampled_val_uv.append(mol.uv)
-                    if spectra_version=='ir':
-                        sampled_val_ir.append(mol.ir)
-                    if spectra_version=='raman':
-                        sampled_val_raman.append(mol.raman)
-                    if spectra_version=='allspectra':
-                        sampled_val_uv.append(mol.uv)
-                        sampled_val_ir.append(mol.ir)
-                        sampled_val_raman.append(mol.raman)
                     if image_attr is not None:
                         sampled_cubes.append(getattr(mol, image_attr))
                     sampled_test_pos.append(mol.pos)
                     sampled_test_rdkit_mols.append(mol.rdmol)
                     n_nodes.append(int(mol.num_atom))
-                # Use torch.stack() to merge tensor list into a single tensor
-                if spectra_version=='uv':
-                    sampled_val_uv = torch.stack(sampled_val_uv)   # [128, 1, 3501]
-                    context = sampled_val_uv                       # [128, 1, 3501]
-                if spectra_version=='ir':
-                    sampled_val_ir = torch.stack(sampled_val_ir)   # [128, 1, 3501]
-                    context = sampled_val_ir                       # [128, 1, 3501]
-                if spectra_version=='raman':
-                    sampled_val_raman = torch.stack(sampled_val_raman)   # [128, 1, 3501]
-                    context = sampled_val_raman                       # [128, 1, 3501]
-                if spectra_version=='allspectra':
-                    sampled_val_uv = torch.stack(sampled_val_uv)   # [128, 1, 3501]
-                    sampled_val_ir = torch.stack(sampled_val_ir)   # [128, 1, 3501]
-                    sampled_val_raman = torch.stack(sampled_val_raman)   # [128, 1, 3501]
-                    context = [sampled_val_uv, sampled_val_ir, sampled_val_raman]
                 
                 if image_attr is not None:
                     context = torch.stack(sampled_cubes).to(device)  # (B, C, H, W)
@@ -353,87 +202,7 @@ def get_cond_sampling_eval_fn(config, noise_scheduler, batch_size, n_samples, in
         # Save ground-truth mol for coordinate error calculation and visualization
         return processed_mols[:n_samples], sampled_test_pos[:n_samples], sampled_test_rdkit_mols[:n_samples]
 
-    def sampling_fn_2D(model):
-        model.eval()
-        processed_mols = []
-        sampled_test_rdkit_mols = []
-
-        with torch.no_grad():            
-            num_mol_test = len(test_ds)
-            permute_test_mol_id = torch.randperm(num_mol_test)
-
-            for r in range(num_sampling_rounds):
-                sampled_test_mol_id= permute_test_mol_id[r * batch_size:(r + 1) * batch_size]
-                sampled_test_mol = []
-                sampled_val_uv = []
-                sampled_val_ir = []
-                sampled_val_raman = []
-                n_nodes = []
-                for i in sampled_test_mol_id:
-                    mol = test_ds[i]
-                    sampled_test_mol.append(mol)
-                    if spectra_version=='uv':
-                        sampled_val_uv.append(mol.uv)
-                    if spectra_version=='ir':
-                        sampled_val_ir.append(mol.ir)
-                    if spectra_version=='raman':
-                        sampled_val_raman.append(mol.raman)
-                    if spectra_version=='allspectra':
-                        sampled_val_uv.append(mol.uv)
-                        sampled_val_ir.append(mol.ir)
-                        sampled_val_raman.append(mol.raman)
-                    sampled_test_rdkit_mols.append(mol.rdmol)
-                    n_nodes.append(mol.num_atom.item())
-                # Use torch.stack() to merge tensor list into a single tensor
-                if spectra_version=='uv':
-                    sampled_val_uv = torch.stack(sampled_val_uv)   # [128, 1, 3501]
-                    context = sampled_val_uv                       # [128, 1, 3501]
-                if spectra_version=='ir':
-                    sampled_val_ir = torch.stack(sampled_val_ir)   # [128, 1, 3501]
-                    context = sampled_val_ir                       # [128, 1, 3501]
-                if spectra_version=='raman':
-                    sampled_val_raman = torch.stack(sampled_val_raman)   # [128, 1, 3501]
-                    context = sampled_val_raman                       # [128, 1, 3501]
-                if spectra_version=='allspectra':
-                    sampled_val_uv = torch.stack(sampled_val_uv)   # [128, 1, 3501]
-                    sampled_val_ir = torch.stack(sampled_val_ir)   # [128, 1, 3501]
-                    sampled_val_raman = torch.stack(sampled_val_raman)   # [128, 1, 3501]
-                    context = [sampled_val_uv, sampled_val_ir, sampled_val_raman]
-                # sampled_test_num_atoms = torch.stack(sampled_test_num_atoms)
-                
-                max_n_nodes = max(n_nodes)
-
-                # construct node and edge mask
-                node_mask = torch.zeros(batch_size, max_n_nodes)
-                for i in range(batch_size):
-                    node_mask[i, 0:n_nodes[i]] = 1
-                edge_mask = node_mask.unsqueeze(1) * node_mask.unsqueeze(2)
-                diag_mask = ~torch.eye(edge_mask.size(1), dtype=torch.bool).unsqueeze(0)
-                edge_mask *= diag_mask
-                edge_mask = edge_mask.view(batch_size * max_n_nodes * max_n_nodes, 1).to(device)
-                node_mask = node_mask.unsqueeze(2).to(device)
-
-                # sample initial noise
-                z = sample_gaussian_with_mask((batch_size, max_n_nodes, node_nf), device, node_mask)
-
-                # sample initial edge noise
-                edge_z = sample_symmetric_edge_feature_noise(batch_size, max_n_nodes, edge_nf, edge_mask)
-                # sampling procedure
-                x_node, x_edge = sampler.sampling(model, z, node_mask, edge_mask, edge_z, context)
-                # postprocessing
-                one_hot, fc, edge_types = post_process_2D(x_node, atom_types, include_fc, node_mask,
-                                                            inverse_scaler, x_edge, edge_mask, compress_edge)
-
-                processed_mols += mol_process_2D(one_hot, fc, n_nodes, edge_types)
-                print('Generate {}, Total {}.'.format(len(processed_mols), n_samples))
-
-        # Save ground-truth mol for coordinate error calculation and visualization
-        return processed_mols[:n_samples], sampled_test_rdkit_mols[:n_samples]
-
-    if only_2D:
-        return sampling_fn_2D
-    else:
-        return sampling_fn
+    return sampling_fn
 
 
 def sample_batch(model, sampler, context, n_nodes, config, inverse_scaler):

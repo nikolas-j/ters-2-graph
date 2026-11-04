@@ -13,8 +13,7 @@ from torch_scatter import scatter
 from torch_geometric.utils import dense_to_sparse
 from .layers import *
 from . import utils
-# DiffSpectra models import
-from models.specformer import SpecFormer
+from .ters_encoder import TersEncoder
 # disable_compile = torch.cuda.get_device_name(0).find('AMD') >= 0
 
 
@@ -744,69 +743,9 @@ class DMT_WO_EQ(nn.Module):
                 nn.Linear(time_dim, time_dim)
             )
 
-        # Spectral condition encoder
-        self.spectra_version = config.data.spectra_version
-        self.cond_encoder = SpecFormer(patch_len=config.model.patch_len, 
-                                        stride=config.model.stride, 
-                                        output_dim=hidden_dim, 
-                                        spectra_version=config.data.spectra_version)
+        # Image encoder; outputs (B, hidden_dim) for cond_lin, as in DMT.
+        self.cond_encoder = TersEncoder.from_config(config, hidden_dim)
         self.cond_lin = nn.Linear(hidden_dim, time_dim)
-
-        # Load pretrained SpecFormer weights
-        if hasattr(config.model, 'pretrained_specformer_path') and config.model.pretrained_specformer_path:
-            print("Load pretrained SpecFormer")
-            self.load_pretrained_specformer(config.model.pretrained_specformer_path)
-        else:
-            print("Train SpecFormer from scratch")
-
-    def load_pretrained_specformer(self, ckpt_path):
-        """Load pretrained SpecFormer weights into current model"""
-        print(f"Loading pretrained SpecFormer from {ckpt_path}")
-        
-        # Load checkpoint
-        device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-        ckpt = torch.load(ckpt_path, map_location=device)
-        
-        if 'state_dict' not in ckpt:
-            print(f"Error: No state_dict key in checkpoint!")
-            return
-        
-        state_dict = ckpt['state_dict']
-        current_dict = self.cond_encoder.state_dict()
-        matched_keys = 0
-        
-        # Find correct prefix
-        prefix = None
-        for possible_prefix in ['model.representation_spec_model', 'model.representation_model']:
-            if any(k.startswith(possible_prefix) for k in state_dict.keys()):
-                prefix = possible_prefix
-                print(f"Found matching prefix: {prefix}")
-                break
-        
-        if prefix is None:
-            print("Unable to find matching model prefix")
-            return
-        
-        # Map key names and exclude mismatched shapes
-        for target_key in current_dict.keys():
-            # Try direct matching
-            source_key = f"{prefix}.{target_key}"
-            
-            
-            if target_key == "out_norm.weight" or target_key == "out_norm.bias":
-                source_key = f"model.representation_model.out_norm.{target_key.split('.')[-1]}"
-            
-            if source_key in state_dict and current_dict[target_key].shape == state_dict[source_key].shape:
-                current_dict[target_key] = state_dict[source_key]
-                matched_keys += 1
-                print(f"Successfully matched: {target_key} <- {source_key}")
-        
-        # Load updated state dict
-        if matched_keys > 0:
-            self.cond_encoder.load_state_dict(current_dict, strict=False)
-            print(f"\nTotal loaded {matched_keys}/{len(current_dict)} keys ({matched_keys/len(current_dict)*100:.1f}%)")
-        else:
-            print("\nWarning: No weights loaded successfully!")
 
     def forward(self, t, xh, node_mask, edge_mask, context=None, *args, **kwargs):
         """
@@ -816,7 +755,7 @@ class DMT_WO_EQ(nn.Module):
         xh: [B, N, ch1] atom feature (positions, types, formal charges)
         node_mask: [B, N, 1]
         edge_mask: [B*N*N, 1]
-        context: [B, 1, spectrum_length] spectral data
+        context: [B, C, H, W] images
         kwargs: 'edge_x' [B, N, N, ch2]
 
         Returns
@@ -870,7 +809,7 @@ class DMT_WO_EQ(nn.Module):
             noise_level = kwargs['noise_level']
             time_emb = self.time_mlp(noise_level)  # [B, time_dim]
             if context is not None:
-                time_emb = time_emb + context     # add spectral condition to time encoding
+                time_emb = time_emb + context     # add the image condition to the time encoding
             node_time_emb = time_emb.unsqueeze(1).expand(-1, n_nodes, -1).reshape(bs * n_nodes, -1)
             edge_batch_id = torch.div(edge_index[0], n_nodes, rounding_mode='floor')
             edge_time_emb = time_emb[edge_batch_id]

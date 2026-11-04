@@ -7,7 +7,6 @@ from .layers import *
 from torch_geometric.utils import dense_to_sparse
 from torch_scatter import scatter
 import functools
-from .specformer import SpecFormer
 from .ters_encoder import TersEncoder
 from .stm_encoder import StmEncoder
 from .stm_encoder_v2 import StmEncoderV2
@@ -261,17 +260,14 @@ class DMT(nn.Module):
             )
 
         # Conditioning encoder; every branch must output (B, hidden_dim) for cond_lin.
-        self.spectra_version = getattr(config.data, 'spectra_version', None)
         _cond_kinds = {'TERS': 'ters', 'STM': 'stm', 'QM9': 'ters'}
-        self.cond_encoder_kind = _cond_kinds.get(config.data.name, 'specformer')
+        if config.data.name not in _cond_kinds:
+            raise ValueError(f'no image encoder for data.name {config.data.name!r}; '
+                             f'known: {sorted(_cond_kinds)}')
+        self.cond_encoder_kind = _cond_kinds[config.data.name]
 
         if self.cond_encoder_kind == 'ters':
-            self.cond_encoder = TersEncoder(
-                in_channels=config.model.ters_in_channels,
-                filters=tuple(getattr(config.model, 'ters_filters', (64, 128, 256, 512))),
-                output_dim=hidden_dim,
-                pool_size=getattr(config.model, 'ters_pool_size', 1),
-            )
+            self.cond_encoder = TersEncoder.from_config(config, hidden_dim)
         elif self.cond_encoder_kind == 'stm':
             stm_version = str(getattr(config.model, 'stm_encoder', 'v1')).lower()
             if stm_version not in ('v1', 'v2', 'clip'):
@@ -313,32 +309,17 @@ class DMT(nn.Module):
                     output_dim=hidden_dim,
                     pool_size=getattr(config.model, 'stm_pool_size', 1),
                 )
-        else:
-            self.cond_encoder = SpecFormer(patch_len=config.model.patch_len, stride=config.model.stride, output_dim=hidden_dim, spectra_version=config.data.spectra_version)
 
         self.cond_lin = nn.Linear(hidden_dim, time_dim)
 
-        specformer_ckpt = getattr(config.model, 'pretrained_specformer_path', '')
-        ters_ckpt = getattr(config.model, 'pretrained_ters_encoder_path', '')
-
         if self.cond_encoder_kind == 'ters':
-            if specformer_ckpt:
-                raise ValueError(
-                    'config.model.pretrained_specformer_path is set but the TERS encoder is '
-                    'a conv trunk, not a SpecFormer -- no key would match. Use '
-                    'config.model.pretrained_ters_encoder_path for a UNet checkpoint, or '
-                    'clear it to train from scratch.')
+            ters_ckpt = getattr(config.model, 'pretrained_ters_encoder_path', '')
             if ters_ckpt:
                 print("Load pretrained TersEncoder")
                 self.load_pretrained_ters_encoder(ters_ckpt)
             else:
                 print("Train TersEncoder from scratch")
-        elif self.cond_encoder_kind == 'stm':
-            if specformer_ckpt:
-                raise ValueError(
-                    'config.model.pretrained_specformer_path is set but the STM encoder is '
-                    'a 3D conv trunk, not a SpecFormer -- no key would match. Clear it to '
-                    'train from scratch.')
+        else:
             stm_ckpt = getattr(config.model, 'pretrained_stm_encoder_path', '')
             if stm_ckpt and self.stm_version != 'clip':
                 raise ValueError(
@@ -354,11 +335,6 @@ class DMT(nn.Module):
                 print(f"Train {type(self.cond_encoder).__name__} from scratch "
                       f"({sum(p.numel() for p in self.cond_encoder.parameters())/1e6:.2f}M "
                       f"params)")
-        elif specformer_ckpt:
-            print("Load pretrained SpecFormer")
-            self.load_pretrained_specformer(specformer_ckpt)
-        else:
-            print("Train SpecFormer from scratch")
 
     def load_pretrained_ters_encoder(self, ckpt_path):
         """Load encoder weights from an ``AttentionUNet`` checkpoint into ``TersEncoder``.
@@ -397,43 +373,6 @@ class DMT(nn.Module):
         print(f'Loaded {matched}/{len(current)} tensors into TersEncoder from {ckpt_path}')
         if skipped_shape:
             print(f'  {len(skipped_shape)} skipped on shape mismatch, e.g. {skipped_shape[0]}')
-    def load_pretrained_specformer(self, ckpt_path):
-        print(f"get pretrained specformer from {ckpt_path}")
-        #load the pretrained SpecFormer model
-        device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-        ckpt = torch.load(ckpt_path, map_location=device)
-        if 'state_dict' not in ckpt:
-            print(f"Warning: pretrained model does not contain 'state_dict' key. Loading the entire checkpoint.")
-            return
-        
-        state_dict = ckpt['state_dict']
-        current_dict=self.cond_encoder.state_dict()
-        matched_keys=0
-        
-        prefix=None
-        for possible_prefix in ['model.representation_spec_model', 'model.representation_model']:
-            if any(key.startswith(possible_prefix) for key in state_dict.keys()):
-                prefix=possible_prefix
-                print(f"Using prefix: {prefix}")
-                break
-        if prefix is None:
-            print("Warning: No matching prefix found in the state_dict.")
-            return
-        for target_key in current_dict.keys():
-            source_key = f"{prefix}.{target_key}"
-            if target_key == "out_norm.weight" or target_key == "out_norm.bias":
-                source_key = f"model.representation_model.out_norm.{target_key.split('.')[-1]}"
-                
-            if source_key in state_dict and current_dict[target_key].shape == state_dict[source_key].shape:
-                current_dict[target_key] = state_dict[source_key]
-                matched_keys += 1
-                print(f"Loaded {source_key} into {target_key}")
-        if matched_keys > 0:
-            self.cond_encoder.load_state_dict(current_dict,strict=False)
-            print(f"Loaded {matched_keys} keys from the pretrained SpecFormer model.")
-        else:
-            print(f"{matched_keys} Warning: No matching keys found in the pretrained SpecFormer model.")
-        
 
     def forward(self, t, xh, node_mask, edge_mask, context=None, *args, **kwargs):
         """

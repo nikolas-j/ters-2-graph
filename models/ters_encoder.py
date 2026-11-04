@@ -56,6 +56,13 @@ class TersEncoder(nn.Module):
         Spatial grid size before the head; 1 is global average pooling.
     """
 
+    @classmethod
+    def from_config(cls, config, output_dim):
+        """The encoder described by ``config.model.ters_*``."""
+        model = config.model
+        return cls(in_channels=model.ters_in_channels, filters=tuple(model.ters_filters),
+                   output_dim=output_dim, pool_size=model.ters_pool_size)
+
     def __init__(self, in_channels=100, filters=(64, 128, 256, 512),
                  kernel_size=(3, 3, 3, 3), output_dim=256, n_groups=8, pool_size=1):
         super().__init__()
