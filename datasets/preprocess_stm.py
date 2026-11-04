@@ -35,7 +35,7 @@ STM_TYPES = {1: 0, 6: 1, 7: 2, 8: 3, 9: 4, 14: 5, 15: 6, 16: 7, 17: 8, 35: 9}
 STM_SYMBOLS = [ATOMIC_SYMBOLS[z] for z in sorted(STM_TYPES, key=STM_TYPES.get)]
 
 XYZ_KEY = 'xyz'
-CUBE_KEY = 'X'
+IMAGE_KEY = 'X'
 
 
 def _split_group(f, split=None):
@@ -154,7 +154,7 @@ def process_split(h5_path, out_path, split=None, charge=0, allow_fallback=True,
 
     with h5py.File(h5_path, 'r') as f:
         name, g = _split_group(f, split)
-        n_cubes = g[CUBE_KEY].shape[0] if CUBE_KEY in g else None
+        n_cubes = g[IMAGE_KEY].shape[0] if IMAGE_KEY in g else None
         print(f'reading {h5_path}  (split={name}, xyz={XYZ_KEY}, cubes={n_cubes})')
 
         records, failures = [], []
@@ -184,7 +184,7 @@ def process_split(h5_path, out_path, split=None, charge=0, allow_fallback=True,
         worst = max(int(r['h5_index']) for r in records)
         if worst >= n_cubes:
             raise IndexError(
-                f'h5_index {worst} but {CUBE_KEY} holds {n_cubes} cubes -- '
+                f'h5_index {worst} but {IMAGE_KEY} holds {n_cubes} cubes -- '
                 f'xyz and X are not the same length in {h5_path}')
 
     os.makedirs(osp.dirname(osp.abspath(out_path)), exist_ok=True)

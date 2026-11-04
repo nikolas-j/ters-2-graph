@@ -1,7 +1,7 @@
 """3D convolutional STM encoder with contrastively pretrained weights.
 
 Maps an STM z-stack ``(B, C, H, W)`` to ``(B, output_dim)``. Selected with
-``config.model.stm_encoder = 'clip'``. Inputs must be normalised with ``NormalizeStmCube``.
+``config.model.stm_encoder = 'clip'``. Inputs must be normalised with ``StmNormalize``.
 
 Usage
 -----
@@ -15,7 +15,7 @@ import torch.nn.functional as F
 from torch import nn
 
 from .ters_encoder import ResBlock, _groups_for
-from .stm_encoder import NormalizeStmCube  # noqa: F401  (re-exported)
+from datasets.transforms import StmNormalize
 
 
 class ResBlock3d(nn.Module):
@@ -141,7 +141,7 @@ class StmCubeEncoder(nn.Module):
             import warnings
             warnings.warn(
                 f'StmCubeEncoder got input with max |x| = {m:.1f}. Raw STM cubes are uint16 '
-                f'(0..65535); NormalizeStmCube was probably not applied. The pretrained '
+                f'(0..65535); StmNormalize was probably not applied. The pretrained '
                 f'weights expect its output.',
                 RuntimeWarning, stacklevel=2)
 
@@ -430,7 +430,7 @@ def _cone(h5_path, ckpt_path, split=None, n=128, seed=0):
     stack = torch.from_numpy(cubes).permute(0, 3, 1, 2).contiguous()
     in_channels = stack.shape[1]
 
-    norm = NormalizeStmCube()
+    norm = StmNormalize()
     normed = torch.stack([norm(c) for c in stack])
     dev = 'cuda' if torch.cuda.is_available() else 'cpu'
     normed = normed.to(dev)

@@ -441,7 +441,7 @@ def cube_stats(h5_path, split=None, n_sample=256, seed=0):
     rng = np.random.default_rng(seed)
     with h5py.File(h5_path, 'r') as f:
         name, g = pp._split_group(f, split)
-        X = g[pp.CUBE_KEY]
+        X = g[pp.IMAGE_KEY]
         n_total, h, w, n_z = X.shape
         scale = np.asarray(g['scale']) if 'scale' in g else None
         z_slices = list(g.attrs.get('z_slices', []))
@@ -466,7 +466,7 @@ def cube_stats(h5_path, split=None, n_sample=256, seed=0):
     env = per_slice_mean.mean(axis=0)
     return dict(
         split=name, n_molecules=int(n_total), n_sampled=int(len(idx)),
-        cube_shape=[int(h), int(w), int(n_z)], z_slices=[float(v) for v in z_slices],
+        image_shape=[int(h), int(w), int(n_z)], z_slices=[float(v) for v in z_slices],
         attrs=attrs,
         per_slice_mean=env.tolist(),
         per_slice_mean_std=per_slice_mean.std(axis=0).tolist(),
@@ -1304,8 +1304,8 @@ def self_test():
                 g.create_dataset('xyz', data=np.zeros((4, 54, 5), np.float32))
             c = cube_stats(h5, n_sample=4)
             check('cube_stats finds the split group without being told',
-                  c['split'] == 'val' and c['cube_shape'] == [16, 16, n_z],
-                  f'{c["split"]} {c["cube_shape"]}')
+                  c['split'] == 'val' and c['image_shape'] == [16, 16, n_z],
+                  f'{c["split"]} {c["image_shape"]}')
             check('planted z-decay envelope is detected as monotone',
                   c['envelope_monotone_decreasing'] is True,
                   f'ratio {c["envelope_ratio_first_to_last"]:.2f}x')
@@ -1395,7 +1395,7 @@ def main():
             print(f'\nreading {a.cube_samples} cubes from {h5}', flush=True)
             cubes[split] = cube_stats(h5, split=None, n_sample=a.cube_samples)
             c = cubes[split]
-            print(f'  {c["cube_shape"]}  z={c["z_slices"]}  '
+            print(f'  {c["image_shape"]}  z={c["z_slices"]}  '
                   f'monotone={c["envelope_monotone_decreasing"]}  '
                   f'dead slices={c["n_dead_slices"]}')
         if cubes:

@@ -28,7 +28,7 @@ def get_config():
     data.num_workers = 2
 
     data.stm_key = 'X'
-    data.load_cubes = False              # graph sidecar only
+    data.load_images = False              # graph sidecar only
     data.use_normalize = True
     data.aug_translation_scale = 0.1
 

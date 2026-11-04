@@ -2,7 +2,7 @@
 
 Maps a z-stack ``(B, C, H, W)``, C = z-slices, to ``(B, output_dim)``. Selected with
 ``config.model.stm_encoder = 'v1'`` (the default). Inputs must be normalised with
-``NormalizeStmCube``.
+``StmNormalize``.
 
 3D stem adapted from ml-spm ``ASDAFMNet`` (mlspm/image/models.py; Alldritt et al., Sci. Adv. 6,
 eaay6913, 2020); its decoder is replaced by a 2D residual trunk and pooled head.
@@ -18,38 +18,9 @@ import torch
 import torch.nn.functional as F
 from torch import nn
 
+from datasets.transforms import StmNormalize
+
 from .ters_encoder import ResBlock, _groups_for
-
-
-class NormalizeStmCube:
-    """Normalise one STM z-stack: divide, asinh-compress, then standardise over the whole cube.
-
-    Parameters
-    ----------
-    uint16_max : float
-        Divisor applied first; ``1.0`` if the cube is already float.
-    asinh_scale : float or None
-        ``s`` in ``asinh(x / s)``; ``None`` disables the compression.
-    eps : float
-        If the cube's standard deviation is below this, it is only mean-centred.
-    """
-
-    def __init__(self, uint16_max=65535.0, asinh_scale=0.01, eps=1e-6):
-        self.uint16_max = uint16_max
-        self.asinh_scale = asinh_scale
-        self.eps = eps
-
-    def __call__(self, cube):
-        x = cube.float()
-        if self.uint16_max and self.uint16_max != 1.0:
-            x = x / self.uint16_max
-        if self.asinh_scale:
-            x = torch.asinh(x / self.asinh_scale)
-        mean = x.mean()
-        std = x.std()
-        if std < self.eps:
-            return x - mean
-        return (x - mean) / std
 
 
 class StmEncoder(nn.Module):
@@ -160,8 +131,8 @@ class StmEncoder(nn.Module):
         if absmax > 100.0:
             print(f'[StmEncoder] WARNING: input |max| = {absmax:.4g}. The raw HDF5 is '
                   f'uint16 (0..65535); this looks unnormalised. Use '
-                  f'models.stm_encoder.NormalizeStmCube in the dataset transform, not '
-                  f'datasets.ters_dataset.NormalizeVectorized, which standardises each '
+                  f'datasets.transforms.StmNormalize in the dataset transform, not '
+                  f'datasets.transforms.PerChannelNormalize, which standardises each '
                   f'z-slice separately and removes the decay envelope this encoder reads.')
 
     def forward(self, x):
@@ -225,26 +196,26 @@ def _self_test():
     # Slice means must stay monotone in z; the test cube is one pattern scaled per slice.
     base = torch.rand(1, 32, 32) ** 3 * 65535.0
     envelope = torch.linspace(1.0, 0.22, 14).view(14, 1, 1)
-    norm = NormalizeStmCube()(base * envelope)
+    norm = StmNormalize()(base * envelope)
     means = norm.mean(dim=(1, 2))
-    assert torch.all(means[:-1] > means[1:]), 'NormalizeStmCube destroyed the z envelope'
+    assert torch.all(means[:-1] > means[1:]), 'StmNormalize destroyed the z envelope'
     assert abs(float(norm.mean())) < 1e-4 and abs(float(norm.std()) - 1) < 1e-2
-    print(f'  ok  NormalizeStmCube keeps the envelope monotone: '
+    print(f'  ok  StmNormalize keeps the envelope monotone: '
           f'{float(means[0]):+.3f} -> {float(means[-1]):+.3f}')
     ok += 1
 
-    # NormalizeVectorized must flatten every slice mean of the same cube.
-    from datasets.ters_dataset import NormalizeVectorized
-    ters_means = NormalizeVectorized()(base * envelope).mean(dim=(1, 2))
+    # PerChannelNormalize must flatten every slice mean of the same cube.
+    from datasets.transforms import PerChannelNormalize
+    ters_means = PerChannelNormalize()(base * envelope).mean(dim=(1, 2))
     assert float(ters_means.abs().max()) < 1e-4, (
-        'NormalizeVectorized no longer flattens each slice -- re-check whether StmEncoder '
+        'PerChannelNormalize no longer flattens each slice -- re-check whether StmEncoder '
         'still needs its own normaliser')
-    print(f'  ok  NormalizeVectorized (TERS) flattens the same envelope to '
+    print(f'  ok  PerChannelNormalize (TERS) flattens the same envelope to '
           f'{float(ters_means[0]):+.3f} -> {float(ters_means[-1]):+.3f}')
     ok += 1
 
     # A constant cube must not yield NaN.
-    flat = NormalizeStmCube()(torch.full((14, 8, 8), 1234.0))
+    flat = StmNormalize()(torch.full((14, 8, 8), 1234.0))
     assert torch.isfinite(flat).all(), 'constant cube produced non-finite values'
     print('  ok  constant cube -> finite (zero-std guard)')
     ok += 1
@@ -273,7 +244,7 @@ def _inspect(h5_path):
 
 
 def _check(h5_path, split=None, n=8):
-    """Run the first ``n`` cubes of a split through ``NormalizeStmCube`` and ``StmEncoder``."""
+    """Run the first ``n`` cubes of a split through ``StmNormalize`` and ``StmEncoder``."""
     import h5py
     import numpy as np
 
@@ -293,7 +264,7 @@ def _check(h5_path, split=None, n=8):
         print(f'  WARNING: z_slices has {len(z_slices)} entries but X has {in_channels} '
               f'channels')
 
-    norm = NormalizeStmCube()
+    norm = StmNormalize()
     normed = torch.stack([norm(c) for c in stack])
     per_slice = normed.mean(dim=(0, 2, 3))
     monotone = bool(torch.all(per_slice[:-1] > per_slice[1:]))

@@ -37,11 +37,11 @@ def get_config():
     data.max_node = 54                   # max atoms per molecule; not read
 
     data.stm_key = 'X'                   # cube dataset name inside the split group
-    data.load_cubes = True
+    data.load_images = True
 
     # Cube-noise probe: std relative to the normalised cube; 0.0 disables. Keep it a float.
-    data.cube_noise_std = 0.0
-    data.cube_noise_seed = 0
+    data.image_noise_std = 0.0
+    data.image_noise_seed = 0
     data.aug_translation_scale = 0.1
     data.transform = 'EdgeComSpectra'
     data.use_normalize = True            # ir/uv/raman only; a no-op for cubes

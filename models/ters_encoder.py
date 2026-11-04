@@ -49,7 +49,7 @@ class TersEncoder(nn.Module):
     Parameters
     ----------
     in_channels : int
-        Number of spectral channels; must match ``TersGraphDataset.in_channels``.
+        Number of spectral channels; must match ``TersDataset.in_channels``.
     output_dim : int
         Embedding size; must equal ``config.model.nf``.
     pool_size : int
@@ -104,12 +104,12 @@ class TersEncoder(nn.Module):
         if x.dim() != 4:
             raise ValueError(
                 f'TersEncoder expects (B, C, H, W), got {tuple(x.shape)}. The cube is '
-                f'permuted to channels-first in TersGraphDataset.__getitem__.')
+                f'permuted to channels-first in TersDataset.__getitem__.')
         if x.size(1) != self.in_channels:
             raise ValueError(
                 f'TersEncoder built for in_channels={self.in_channels} but got '
                 f'{x.size(1)}. Set config.model.ters_in_channels to match '
-                f'TersGraphDataset.in_channels.')
+                f'TersDataset.in_channels.')
 
         x = self.stem(x)
         for block in self.blocks:

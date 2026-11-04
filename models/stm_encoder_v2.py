@@ -1,7 +1,7 @@
 """Residual 3D convolutional STM encoder.
 
 Maps an STM z-stack ``(B, C, H, W)`` to ``(B, output_dim)``. Selected with
-``config.model.stm_encoder = 'v2'``. Inputs must be normalised with ``NormalizeStmCube``.
+``config.model.stm_encoder = 'v2'``. Inputs must be normalised with ``StmNormalize``.
 
 Adapted from SINGROUP/ml-spm (Kurki et al., ACS Nano 18, 11130, 2024): ``ResBlock3d`` is
 ``Conv3dBlock`` (mlspm/modules.py) with GroupNorm added; widths and z pooling follow ``EDAFMNet``.
@@ -19,7 +19,7 @@ import torch.nn.functional as F
 from torch import nn
 
 from .ters_encoder import ResBlock, _groups_for
-from .stm_encoder import NormalizeStmCube  # noqa: F401  (re-exported)
+from datasets.transforms import StmNormalize
 
 
 class ResBlock3d(nn.Module):
@@ -191,7 +191,7 @@ class StmEncoderV2(nn.Module):
             import warnings
             warnings.warn(
                 f'StmEncoderV2 got input with max |x| = {m:.1f}. Raw STM cubes are uint16 '
-                f'(0..65535); NormalizeStmCube was probably not applied. Training runs but '
+                f'(0..65535); StmNormalize was probably not applied. Training runs but '
                 f'converges poorly.', RuntimeWarning, stacklevel=2)
 
     def forward(self, x):
@@ -395,7 +395,7 @@ def _cone(h5_path, split=None, n=256, seed=0):
     stack = torch.from_numpy(cubes).permute(0, 3, 1, 2).contiguous()
     in_channels = stack.shape[1]
 
-    norm = NormalizeStmCube()
+    norm = StmNormalize()
     normed = torch.stack([norm(c) for c in stack])
     dev = 'cuda' if torch.cuda.is_available() else 'cpu'
     normed = normed.to(dev)

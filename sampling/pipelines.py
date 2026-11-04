@@ -28,7 +28,7 @@ def get_sampling_fn(config, noise_scheduler, batch_size, n_samples, inverse_scal
     self_cond = config.model.self_cond
     only_2D = config.only_2D
     spectra_version = getattr(config.data, 'spectra_version', None)
-    cube_attr = getattr(val_ds, 'cube_attr', None)  # 'ters' or 'stm' for image-cube datasets
+    image_attr = getattr(val_ds, 'image_attr', None)  # 'ters' or 'stm' for image-cube datasets
 
     num_sampling_rounds = int(np.ceil(n_samples / batch_size))
     if config.sampling.method == 'ancestral':
@@ -72,8 +72,8 @@ def get_sampling_fn(config, noise_scheduler, batch_size, n_samples, inverse_scal
                         sampled_val_uv.append(mol.uv)
                         sampled_val_ir.append(mol.ir)
                         sampled_val_raman.append(mol.raman)
-                    if cube_attr is not None:
-                        sampled_cubes.append(getattr(mol, cube_attr))
+                    if image_attr is not None:
+                        sampled_cubes.append(getattr(mol, image_attr))
                     sampled_val_pos.append(mol.pos)
                     sampled_val_rdkit_mols.append(mol.rdmol)
                     n_nodes.append(int(mol.num_atom))
@@ -94,7 +94,7 @@ def get_sampling_fn(config, noise_scheduler, batch_size, n_samples, inverse_scal
                     context = [sampled_val_uv, sampled_val_ir, sampled_val_raman]
                 # sampled_val_num_atoms = torch.stack(sampled_val_num_atoms)
                 
-                if cube_attr is not None:
+                if image_attr is not None:
                     context = torch.stack(sampled_cubes).to(device)  # (B, C, H, W)
                 max_n_nodes = max(n_nodes)
                 n_batch = len(n_nodes)
@@ -241,7 +241,7 @@ def get_cond_sampling_eval_fn(config, noise_scheduler, batch_size, n_samples, in
     self_cond = config.model.self_cond
     only_2D = config.only_2D
     spectra_version = getattr(config.data, 'spectra_version', None)
-    cube_attr = getattr(test_ds, 'cube_attr', None)  # 'ters' or 'stm' for image-cube datasets
+    image_attr = getattr(test_ds, 'image_attr', None)  # 'ters' or 'stm' for image-cube datasets
 
     num_sampling_rounds = int(np.ceil(n_samples / batch_size))
     if config.sampling.method == 'ancestral':
@@ -288,8 +288,8 @@ def get_cond_sampling_eval_fn(config, noise_scheduler, batch_size, n_samples, in
                         sampled_val_uv.append(mol.uv)
                         sampled_val_ir.append(mol.ir)
                         sampled_val_raman.append(mol.raman)
-                    if cube_attr is not None:
-                        sampled_cubes.append(getattr(mol, cube_attr))
+                    if image_attr is not None:
+                        sampled_cubes.append(getattr(mol, image_attr))
                     sampled_test_pos.append(mol.pos)
                     sampled_test_rdkit_mols.append(mol.rdmol)
                     n_nodes.append(int(mol.num_atom))
@@ -309,7 +309,7 @@ def get_cond_sampling_eval_fn(config, noise_scheduler, batch_size, n_samples, in
                     sampled_val_raman = torch.stack(sampled_val_raman)   # [128, 1, 3501]
                     context = [sampled_val_uv, sampled_val_ir, sampled_val_raman]
                 
-                if cube_attr is not None:
+                if image_attr is not None:
                     context = torch.stack(sampled_cubes).to(device)  # (B, C, H, W)
                 max_n_nodes = max(n_nodes)
                 n_batch = len(n_nodes)

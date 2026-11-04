@@ -33,10 +33,10 @@ def get_dataset(config, transform=True):
 
     # Build up dataset
     if config.data.name == 'TERS':
-        return _build_ters(config, transform, dataset_info)
+        return get_ters_dataset(config, transform, dataset_info)
 
     if config.data.name == 'STM':
-        return _build_stm(config, transform, dataset_info)
+        return get_stm_dataset(config, transform, dataset_info)
 
     if config.data.name == 'QM9S':
         dataset = QM9SDataset(config.data.root, transform=transform, spectra_version=config.data.spectra_version)
@@ -61,83 +61,65 @@ def get_dataset(config, transform=True):
     return train_dataset, val_dataset, test_dataset, dataset_info
 
 
-def _cube_noise(config):
-    """Return ``AddCubeNoise`` from ``data.cube_noise_std``/``cube_noise_seed``, or None if off.
+def _get_image_noise(config):
+    """``FixedNoise`` from ``data.image_noise_std`` and ``data.image_noise_seed``; None when off."""
+    from .transforms import FixedNoise
 
-    Applies to every split, including train.
-    """
-    from .ters_dataset import AddCubeNoise
-
-    std = float(getattr(config.data, 'cube_noise_std', 0.0))
-    if std <= 0.0:
-        return None
-    return AddCubeNoise(std=std, seed=int(getattr(config.data, 'cube_noise_seed', 0)))
+    std = getattr(config.data, 'image_noise_std', 0.0)
+    return FixedNoise(std, getattr(config.data, 'image_noise_seed', 0)) if std > 0 else None
 
 
-def _build_ters(config, transform, dataset_info):
-    """Build three TersGraphDataset splits, one per HDF5 file.
+def _set_transforms(config, train, val, test):
+    """Give each split its image transforms, built from the options in ``data.augmentation``."""
+    from .transforms import get_transforms
 
-    Returns the ``'diffspectra'`` five-tuple with the train set in both train slots.
+    options = getattr(config.data, 'augmentation', None)
+    if options:
+        train.transform_image, val.transform_image = get_transforms(**options)
+        test.transform_image = val.transform_image
 
-    Config keys:
-        data.root             directory holding {train,val,test}.h5
-        data.graph_root       directory holding graphs_{split}.pt  (default: data.root)
-        data.ters_key         cube dataset name                    (default: channels_100)
-        data.load_cubes       read the image cubes                 (default: True)
-        data.cube_noise_std   noise std, fraction of per-channel signal std  (default: 0.0)
-        data.cube_noise_seed  noise seed                           (default: 0)
+
+def get_ters_dataset(config, transform, dataset_info):
+    """Train, val and test ``TersDataset`` splits; the train set fills both train slots.
+
+    Config keys: ``data.root`` ({train,val,test}.h5), ``data.graph_root`` (graphs_{split}.pt,
+    default ``data.root``), ``data.ters_key`` (default ``channels_100``), ``data.load_images``,
+    ``data.image_noise_std``, ``data.image_noise_seed``, ``data.augmentation``.
     """
     import os.path as osp
-    from .ters_dataset import TersGraphDataset
+    from .ters_dataset import TersDataset
 
-    root = config.data.root
-    graph_root = getattr(config.data, 'graph_root', root)
-    channels_key = getattr(config.data, 'ters_key', 'channels_100')
-    load_cubes = getattr(config.data, 'load_cubes', True)
-    noise = _cube_noise(config)
-
-    def split(name):
-        return TersGraphDataset(
-            h5_path=osp.join(root, f'{name}.h5'),
-            graphs_path=osp.join(graph_root, f'graphs_{name}.pt'),
-            channels_key=channels_key,
-            transform=transform,
-            load_cubes=load_cubes,
-            noise=noise,
-        )
-
-    train, val, test = split('train'), split('val'), split('test')
+    data = config.data
+    graph_root = getattr(data, 'graph_root', data.root)
+    datasets = [TersDataset(osp.join(data.root, f'{split}.h5'),
+                            osp.join(graph_root, f'graphs_{split}.pt'),
+                            image_key=getattr(data, 'ters_key', 'channels_100'),
+                            transform=transform,
+                            load_images=getattr(data, 'load_images', True),
+                            noise=_get_image_noise(config))
+                for split in ('train', 'val', 'test')]
+    _set_transforms(config, *datasets)
+    train, val, test = datasets
     return train, train, val, test, dataset_info
 
 
-def _build_stm(config, transform, dataset_info):
-    """Build three StmGraphDataset splits, one per HDF5 file.
-
-    Returns the same five-tuple as ``_build_ters``. Config keys as ``_build_ters``, except
-    ``data.stm_key`` (cube dataset name inside the split group, default ``X``) replaces
-    ``data.ters_key``.
-    """
+def get_stm_dataset(config, transform, dataset_info):
+    """As ``get_ters_dataset`` for ``StmDataset``; ``data.stm_key`` (default ``X``) names the images."""
     import os.path as osp
-    from .stm_dataset import StmGraphDataset
+    from .stm_dataset import StmDataset
 
-    root = config.data.root
-    graph_root = getattr(config.data, 'graph_root', root)
-    cube_key = getattr(config.data, 'stm_key', 'X')
-    load_cubes = getattr(config.data, 'load_cubes', True)
-    noise = _cube_noise(config)
-
-    def split(name):
-        return StmGraphDataset(
-            h5_path=osp.join(root, f'{name}.h5'),
-            graphs_path=osp.join(graph_root, f'graphs_{name}.pt'),
-            split=name,
-            transform=transform,
-            load_cubes=load_cubes,
-            cube_key=cube_key,
-            noise=noise,
-        )
-
-    train, val, test = split('train'), split('val'), split('test')
+    data = config.data
+    graph_root = getattr(data, 'graph_root', data.root)
+    datasets = [StmDataset(osp.join(data.root, f'{split}.h5'),
+                           osp.join(graph_root, f'graphs_{split}.pt'),
+                           split=split,
+                           transform=transform,
+                           load_images=getattr(data, 'load_images', True),
+                           image_key=getattr(data, 'stm_key', 'X'),
+                           noise=_get_image_noise(config))
+                for split in ('train', 'val', 'test')]
+    _set_transforms(config, *datasets)
+    train, val, test = datasets
     return train, train, val, test, dataset_info
 
 
@@ -183,7 +165,7 @@ def get_dataloader(train_ds, val_ds, test_ds, config):
         )
     elif is_ters:
         if config.only_2D:
-            raise ValueError('only_2D has no TERS collate; the cube conditions 3D positions.')
+            raise ValueError('only_2D has no TERS collate; the image conditions 3D positions.')
         collate_fn = CollateTers(
             aug_rotation=aug_rotation,
             aug_translation=aug_translation,
@@ -201,8 +183,8 @@ def get_dataloader(train_ds, val_ds, test_ds, config):
             aug_translation_scale=config.data.aug_translation_scale
         )
 
-    # TERS cubes are 26 MB each (256x256x100 float32); prefetch_factor=1 bounds in-flight
-    # RAM to about num_workers x batch_size cubes.
+    # Planar TERS images are 26 MB each (256x256x100 float32); prefetch_factor=1 bounds in-flight
+    # RAM to about num_workers x batch_size images.
     loader_kwargs = {}
     if is_ters:
         num_workers = getattr(config.data, 'num_workers', 2)
@@ -600,20 +582,20 @@ class CollateSpectra(object):
 
 
 class CollateTers(CollateSpectra):
-    """Collate for TERS cube conditioning; ``context`` is the ``(B, C, H, W)`` cube batch."""
+    """Collate for image conditioning; ``context`` is the ``(B, C, H, W)`` image batch."""
 
     def __init__(self, aug_rotation=False, aug_translation=False, aug_translation_scale=0.01):
-        # spectra_version does not apply to cubes
+        # spectra_version does not apply to images
         super().__init__(spectra_version=None, aug_rotation=aug_rotation,
                          aug_translation=aug_translation,
                          aug_translation_scale=aug_translation_scale)
 
-    # Data attribute that holds the cube.
-    cube_attr = 'ters'
+    # Data attribute that holds the image.
+    image_attr = 'ters'
 
     def __call__(self, items):
         items = [(item.atom_one_hot, item.edge_one_hot, item.fc, item.pos, item.num_atom,
-                  getattr(item, self.cube_attr)) for item in items]
+                  getattr(item, self.image_attr)) for item in items]
         atom_one_hot, edge_one_hot, formal_charges, positions, num_atoms, ters = zip(*items)
 
         atom_one_hot, edge_one_hot, formal_charges, positions, node_mask, edge_mask = \
@@ -633,13 +615,13 @@ class CollateTers(CollateSpectra):
 
 
 class CollateStm(CollateTers):
-    """Collate for STM z-stack conditioning; reads the cube from ``data.stm``.
+    """Collate for STM z-stack conditioning; reads the image from ``data.stm``.
 
     ``aug_rotation`` must stay False: rotating coordinates without the images breaks their
     correspondence. Nothing here enforces it.
     """
 
-    cube_attr = 'stm'
+    image_attr = 'stm'
 
 
 class CollateSpectr2D(object):

@@ -36,11 +36,11 @@ def get_config():
     data.max_node = 40                   # max atoms per molecule; not read
 
     data.ters_key = 'channels_100'       # the only cube stored in the HDF5 files
-    data.load_cubes = True
+    data.load_images = True
 
     # Cube-noise probe: std relative to the normalised cube; 0.0 disables. Keep it a float.
-    data.cube_noise_std = 0.0
-    data.cube_noise_seed = 0
+    data.image_noise_std = 0.0
+    data.image_noise_seed = 0
     data.aug_translation_scale = 0.1
     data.transform = 'EdgeComSpectra'
     data.use_normalize = True            # ir/uv/raman only; a no-op for cubes
@@ -81,7 +81,7 @@ def get_config():
     model.trans_name = 'TransMixLayer'
     model.cond_ch = 1
 
-    model.ters_in_channels = 100         # must equal TersGraphDataset.in_channels
+    model.ters_in_channels = 100         # must equal TersDataset.in_channels
     model.ters_filters = [64, 128, 256, 512]
     model.ters_pool_size = 4             # head's spatial grid; 1 is a global average pool
     model.pretrained_ters_encoder_path = ''      # empty = train the encoder from scratch
